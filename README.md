@@ -4,22 +4,34 @@
 [![Next.js](https://img.shields.io/badge/next.js-15-black?logo=next.js)](https://nextjs.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Run Codex on a remote machine. Control it from a browser.
+> Run Codex on a remote machine. Control it from a browser.
 
-Codex Remote Console is a self-hosted web console for Codex sessions that run on a remote server, workstation, or lab machine. The Codex CLI and project files stay on that remote machine; your browser connects to a private control console for starting sessions, sending prompts, approving commands, watching output, and reviewing diffs.
+Codex Remote Console is a self-hosted web control panel for Codex sessions that run on a remote server, workstation, or lab machine.
 
-Use it when SSH is too cramped for long Codex sessions, but you still want Codex to execute where the code, credentials, GPUs, services, and filesystem already live.
+The Codex CLI, project files, credentials, services, and shell access stay on the remote machine. Your browser becomes the console: start or resume sessions, send prompts, approve commands, watch output, and review diffs without keeping an SSH terminal in focus.
 
-What the browser console gives you:
+TL;DR: Codex runs where your code lives. You control it from any trusted browser.
 
-- A browser console for Codex sessions running on a remote machine.
-- Server-side project selection with readable/writable/git status checks.
-- Streaming Codex messages, reasoning summaries, command output, plan updates, and file changes from the remote host.
-- Browser approval controls for Codex command approvals and `request_user_input` prompts.
+Use it when SSH is too cramped for long Codex sessions, but you still want execution to happen on the machine that already has your repo, environment, GPU, network, and secrets.
+
+## What You Get
+
+- Remote Codex sessions controlled from a browser console.
+- Server-side project picker with readable, writable, and git status checks.
+- Live stream of Codex messages, reasoning summaries, command output, plans, and file changes.
+- Browser approval controls for command approvals and `request_user_input` prompts.
 - Per-turn diff cards plus `/diff` and `/review` shortcuts for the remote working tree.
-- A private deployment behind a subpath reverse proxy such as `/codex_remote_console/`.
+- Private deployment support behind VPN, SSH tunnel, LAN, or a subpath reverse proxy such as `/codex_remote_console/`.
 
 Codex Remote Console is intended for trusted private environments. It is not a multi-tenant hosted service.
+
+## Screenshots
+
+![Codex Remote Console session overview](docs/images/console-overview.svg)
+
+| Private login | Remote control flow | Browser approvals |
+| --- | --- | --- |
+| ![Password login for Codex Remote Console](docs/images/login.png) | ![Remote browser-to-Codex control flow](docs/images/remote-flow.svg) | ![Codex command approvals in the browser](docs/images/approval-flow.svg) |
 
 ## Quick Start
 
