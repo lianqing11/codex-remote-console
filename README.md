@@ -4,18 +4,20 @@
 [![Next.js](https://img.shields.io/badge/next.js-15-black?logo=next.js)](https://nextjs.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Browser control panel for server-side Codex sessions.
+Run Codex on a remote machine. Control it from a browser.
 
-Codex Remote Console runs a small Next.js and Node server next to the Codex CLI. Open it in a browser, pick a server directory, start or resume a Codex thread, answer approval prompts, and review file changes without keeping the original browser tab alive.
+Codex Remote Console is a self-hosted web console for Codex sessions that run on a remote server, workstation, or lab machine. The Codex CLI and project files stay on that remote machine; your browser connects to a private control console for starting sessions, sending prompts, approving commands, watching output, and reviewing diffs.
 
-Use it when you want:
+Use it when SSH is too cramped for long Codex sessions, but you still want Codex to execute where the code, credentials, GPUs, services, and filesystem already live.
 
-- A web UI for Codex threads running on a local workstation, remote box, or lab server.
-- Server-side project directory selection with readable/writable/git status checks.
-- Streaming Codex messages, reasoning summaries, command output, plan updates, and file changes.
-- Browser handling for Codex approvals and `request_user_input` prompts.
-- Per-turn diff cards plus `/diff` and `/review` shortcuts for current working-tree review.
-- A private deployment that works behind a subpath reverse proxy such as `/codex_remote_console/`.
+What the browser console gives you:
+
+- A browser console for Codex sessions running on a remote machine.
+- Server-side project selection with readable/writable/git status checks.
+- Streaming Codex messages, reasoning summaries, command output, plan updates, and file changes from the remote host.
+- Browser approval controls for Codex command approvals and `request_user_input` prompts.
+- Per-turn diff cards plus `/diff` and `/review` shortcuts for the remote working tree.
+- A private deployment behind a subpath reverse proxy such as `/codex_remote_console/`.
 
 Codex Remote Console is intended for trusted private environments. It is not a multi-tenant hosted service.
 
@@ -24,9 +26,9 @@ Codex Remote Console is intended for trusted private environments. It is not a m
 Requirements:
 
 - Node.js `18.18+` and npm.
-- The `codex` CLI installed and available on the server `PATH`.
-- Codex authenticated for the same OS user that starts this server.
-- Filesystem access to the project directories you want Codex to edit.
+- The `codex` CLI installed on the remote machine and available on the server `PATH`.
+- Codex authenticated for the same remote OS user that starts this server.
+- Filesystem access on the remote machine to the project directories you want Codex to edit.
 
 Install dependencies:
 
@@ -34,7 +36,7 @@ Install dependencies:
 npm install
 ```
 
-Run the development server:
+Start the console on the same remote machine where Codex should run:
 
 ```bash
 CODEX_WEB_PASSWORD='change-me' PORT=3027 npm run dev
@@ -43,30 +45,30 @@ CODEX_WEB_PASSWORD='change-me' PORT=3027 npm run dev
 Open:
 
 ```text
-http://localhost:3027
+http://<remote-host>:3027
 ```
 
-On a remote host, replace `localhost` with the host name or IP address. The server binds to `0.0.0.0` by default so reverse proxies and LAN access can reach it.
+If you are testing locally on the same machine, use `http://localhost:3027`. The server binds to `0.0.0.0` by default so reverse proxies and LAN access can reach it.
 
 ## Security Model
 
-Codex Remote Console runs Codex as the same OS user that starts the Node process. Anyone who can access this UI can potentially access that user's projects, shell permissions, and Codex credentials.
+Codex runs on the remote machine as the same OS user that starts the Node process. Anyone who can access this UI can potentially access that user's projects, shell permissions, network access, and Codex credentials.
 
 Before exposing it beyond your own machine:
 
 - Set `CODEX_WEB_PASSWORD` or `CODEX_WEB_TOKEN`.
 - Use a strong `CODEX_WEB_SECRET` so session cookies are not tied to a login credential.
-- Put the app behind HTTPS, a trusted private network, VPN, or equivalent access control.
+- Put the app behind HTTPS, a trusted private network, VPN, SSH tunnel, or equivalent access control.
 - Do not publish `.env`, shell history, logs, screenshots, or README examples containing real passwords, tokens, hostnames, usernames, or project paths.
 
 Production mode refuses to start unless `CODEX_WEB_PASSWORD` or `CODEX_WEB_TOKEN` is set.
 
 ## Features
 
-- Start, resume, close, interrupt, and archive Codex threads.
-- Pick project directories from server-side suggestions, recent selections, trusted Codex projects, or manual absolute paths.
+- Start, resume, close, interrupt, and archive remote Codex threads.
+- Pick remote project directories from server-side suggestions, recent selections, trusted Codex projects, or manual absolute paths.
 - Browse child directories without exposing arbitrary local file contents.
-- Stream Codex protocol events to connected browsers over WebSocket.
+- Stream remote Codex protocol events to connected browsers over WebSocket.
 - Keep Codex sessions alive when the browser disconnects.
 - Switch runtime settings from the UI, including model, reasoning effort, sandbox mode, approval policy, collaboration mode, and service tier.
 - Auto-approve clearly read-only command approvals while preserving manual checkpoints for destructive commands.
@@ -77,22 +79,22 @@ Production mode refuses to start unless `CODEX_WEB_PASSWORD` or `CODEX_WEB_TOKEN
 ## How It Works
 
 ```text
-Browser
+Browser on your laptop
   |
   | HTTP + WebSocket
   v
-Codex Remote Console
+Codex Remote Console on the remote machine
   Next.js UI + custom Node server
   |
   | JSON-RPC over stdio by default
   v
-codex app-server
+codex app-server on the remote machine
   |
   v
-Project directories on the server
+Remote project directories
 ```
 
-The custom server in `server/index.ts` prepares the Next.js app, serves API routes, and accepts browser WebSocket connections at `/ws`.
+The custom server in `server/index.ts` runs on the remote machine. It prepares the Next.js app, serves API routes, and accepts browser WebSocket connections at `/ws`.
 
 On first authenticated use, `server/codex/stdioGateway.ts` starts:
 
@@ -100,7 +102,7 @@ On first authenticated use, `server/codex/stdioGateway.ts` starts:
 codex app-server --listen stdio://
 ```
 
-The browser sends Codex protocol requests to the custom server, and the server forwards them to the local Codex app-server process. Codex notifications stream back to connected browsers. Set `CODEX_WEB_GATEWAY=ws` to use the older loopback WebSocket transport.
+The browser sends Codex protocol requests to the remote console server, and the server forwards them to the Codex app-server process running on the same remote machine. Codex notifications stream back to connected browsers. Set `CODEX_WEB_GATEWAY=ws` to use the older loopback WebSocket transport.
 
 Thread starts and resumes are adjusted with persistent history defaults:
 
