@@ -1,5 +1,5 @@
 {
-  "name": "codex-web",
+  "name": "codex-remote-console",
   "version": "0.1.0",
   "description": "Browser control panel for server-side Codex sessions.",
   "license": "MIT",
@@ -11,12 +11,12 @@
   ],
   "scripts": {
     "dev": "tsx server/index.ts",
-    "dev:proxy": "NEXT_PUBLIC_BASE_PATH=/codex_web PORT=3027 tsx server/index.ts",
+    "dev:proxy": "NEXT_PUBLIC_BASE_PATH=/codex_remote_console PORT=3027 tsx server/index.ts",
     "build": "next build",
-    "build:proxy": "NEXT_PUBLIC_BASE_PATH=/codex_web next build",
+    "build:proxy": "NEXT_PUBLIC_BASE_PATH=/codex_remote_console next build",
     "start": "NODE_ENV=production tsx server/index.ts",
     "prestart:proxy": "npm run build:proxy",
-    "start:proxy": "NODE_ENV=production NEXT_PUBLIC_BASE_PATH=/codex_web PORT=3027 tsx server/index.ts",
+    "start:proxy": "NODE_ENV=production NEXT_PUBLIC_BASE_PATH=/codex_remote_console PORT=3027 tsx server/index.ts",
     "test:slash": "tsx scripts/slashCommands.test.ts",
     "test:diff": "tsx scripts/gitDiff.test.ts",
     "typecheck": "tsc --noEmit",

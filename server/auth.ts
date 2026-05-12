@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-const cookieName = "codex_web_session";
+const cookieName = "codex_remote_console_session";
 const maxAgeSeconds = 60 * 60 * 24 * 14;
 
 function secret() {

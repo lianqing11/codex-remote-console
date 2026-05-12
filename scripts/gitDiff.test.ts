@@ -13,10 +13,10 @@ async function git(cwd: string, args: string[]) {
 }
 
 async function makeRepo() {
-  const repo = await mkdtemp(path.join(tmpdir(), "codex-web-diff-"));
+  const repo = await mkdtemp(path.join(tmpdir(), "codex-remote-console-diff-"));
   await git(repo, ["init"]);
-  await git(repo, ["config", "user.email", "codex-web@example.com"]);
-  await git(repo, ["config", "user.name", "Codex Web"]);
+  await git(repo, ["config", "user.email", "codex-remote-console@example.com"]);
+  await git(repo, ["config", "user.name", "Codex Remote Console"]);
   await writeFile(path.join(repo, "tracked.txt"), "one\n");
   await git(repo, ["add", "tracked.txt"]);
   await git(repo, ["commit", "-m", "initial"]);
@@ -94,7 +94,7 @@ async function main() {
     assert.doesNotMatch(result.diff, /large\.txt/);
   });
 
-  const nonGit = await mkdtemp(path.join(tmpdir(), "codex-web-nongit-"));
+  const nonGit = await mkdtemp(path.join(tmpdir(), "codex-remote-console-nongit-"));
   try {
     await mkdir(path.join(nonGit, "nested"));
     await assert.rejects(gitWorkingTreeDiff(nonGit), /not inside a git worktree/);

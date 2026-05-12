@@ -268,13 +268,13 @@ app.prepare().then(() => {
   });
 
   server.listen(port, hostname, () => {
-    console.log(`codex-web listening on http://${hostname}:${port}`);
+    console.log(`codex-remote-console listening on http://${hostname}:${port}`);
     if (!authEnabled()) {
       console.log("auth is disabled; set CODEX_WEB_PASSWORD for private deployments");
     }
     codexVersion();
     gateway.ensureStarted().catch((error) => {
-      console.warn("[codex-web] gateway warmup failed:", error instanceof Error ? error.message : error);
+      console.warn("[codex-remote-console] gateway warmup failed:", error instanceof Error ? error.message : error);
     });
   });
 

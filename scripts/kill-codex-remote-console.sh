@@ -60,13 +60,13 @@ for pid in "${!PIDS[@]}"; do
 done
 
 if ((${#PIDS[@]} == 0)); then
-  echo "No codex_web process found for $ROOT on port $PORT."
+  echo "No codex_remote_console process found for $ROOT on port $PORT."
   exit 0
 fi
 
 mapfile -t SORTED_PIDS < <(printf '%s\n' "${!PIDS[@]}" | sort -n)
 
-echo "Stopping codex_web processes:"
+echo "Stopping codex_remote_console processes:"
 for pid in "${SORTED_PIDS[@]}"; do
   echo "  $pid $(proc_cmd "$pid")"
 done

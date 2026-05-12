@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Codex Web",
+  title: "Codex Remote Console",
   description: "Private web console for server-side Codex sessions"
 };
 

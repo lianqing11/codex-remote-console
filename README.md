@@ -1,4 +1,4 @@
-# Codex Web
+# Codex Remote Console
 
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18.18-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Next.js](https://img.shields.io/badge/next.js-15-black?logo=next.js)](https://nextjs.org/)
@@ -6,7 +6,7 @@
 
 Browser control panel for server-side Codex sessions.
 
-Codex Web runs a small Next.js and Node server next to the Codex CLI. Open it in a browser, pick a server directory, start or resume a Codex thread, answer approval prompts, and review file changes without keeping the original browser tab alive.
+Codex Remote Console runs a small Next.js and Node server next to the Codex CLI. Open it in a browser, pick a server directory, start or resume a Codex thread, answer approval prompts, and review file changes without keeping the original browser tab alive.
 
 Use it when you want:
 
@@ -15,9 +15,9 @@ Use it when you want:
 - Streaming Codex messages, reasoning summaries, command output, plan updates, and file changes.
 - Browser handling for Codex approvals and `request_user_input` prompts.
 - Per-turn diff cards plus `/diff` and `/review` shortcuts for current working-tree review.
-- A private deployment that works behind a subpath reverse proxy such as `/codex_web/`.
+- A private deployment that works behind a subpath reverse proxy such as `/codex_remote_console/`.
 
-Codex Web is intended for trusted private environments. It is not a multi-tenant hosted service.
+Codex Remote Console is intended for trusted private environments. It is not a multi-tenant hosted service.
 
 ## Quick Start
 
@@ -50,7 +50,7 @@ On a remote host, replace `localhost` with the host name or IP address. The serv
 
 ## Security Model
 
-Codex Web runs Codex as the same OS user that starts the Node process. Anyone who can access this UI can potentially access that user's projects, shell permissions, and Codex credentials.
+Codex Remote Console runs Codex as the same OS user that starts the Node process. Anyone who can access this UI can potentially access that user's projects, shell permissions, and Codex credentials.
 
 Before exposing it beyond your own machine:
 
@@ -81,7 +81,7 @@ Browser
   |
   | HTTP + WebSocket
   v
-Codex Web
+Codex Remote Console
   Next.js UI + custom Node server
   |
   | JSON-RPC over stdio by default
@@ -133,11 +133,11 @@ The login flow creates an HTTP-only session cookie signed with `CODEX_WEB_SECRET
 
 ## Reverse Proxy
 
-For a subpath deployment at `/codex_web/`, build and run with the same base path:
+For a subpath deployment at `/codex_remote_console/`, build and run with the same base path:
 
 ```bash
-NEXT_PUBLIC_BASE_PATH=/codex_web npm run build
-NODE_ENV=production NEXT_PUBLIC_BASE_PATH=/codex_web CODEX_WEB_PASSWORD='change-me' PORT=3027 npm run start
+NEXT_PUBLIC_BASE_PATH=/codex_remote_console npm run build
+NODE_ENV=production NEXT_PUBLIC_BASE_PATH=/codex_remote_console CODEX_WEB_PASSWORD='change-me' PORT=3027 npm run start
 ```
 
 The bundled scripts provide the same default base path and port.
@@ -157,7 +157,7 @@ CODEX_WEB_PASSWORD='change-me' CODEX_WEB_SECRET='replace-with-random-secret' npm
 Map your reverse proxy route to the backend server:
 
 ```text
-https://your-host.example/codex_web/ -> http://127.0.0.1:3027
+https://your-host.example/codex_remote_console/ -> http://127.0.0.1:3027
 ```
 
 If you use a different proxy path, set `NEXT_PUBLIC_BASE_PATH` to that exact path at build time and runtime.
@@ -169,7 +169,7 @@ If you use a different proxy path, set `NEXT_PUBLIC_BASE_PATH` to that exact pat
 | `PORT` | HTTP server port. | `3000` |
 | `CODEX_WEB_PORT` | Fallback HTTP server port when `PORT` is not set. | unset |
 | `HOST` | HTTP bind host. | `0.0.0.0` |
-| `NEXT_PUBLIC_BASE_PATH` | Base path for proxy deployments, for example `/codex_web`. | unset |
+| `NEXT_PUBLIC_BASE_PATH` | Base path for proxy deployments, for example `/codex_remote_console`. | unset |
 | `CODEX_WEB_PASSWORD` | Enables password login and satisfies production auth. | unset |
 | `CODEX_WEB_TOKEN` | Enables token login and satisfies production auth. | unset |
 | `CODEX_WEB_AUTH` | Set to `on` to require auth in development even without a password or token. | unset |
@@ -185,7 +185,7 @@ See `.env.example` for a copyable list of common settings.
 
 ## Approval Policy
 
-Codex decides when a command or file change needs approval. Codex Web adds a small server-side policy before those approval requests reach the browser:
+Codex decides when a command or file change needs approval. Codex Remote Console adds a small server-side policy before those approval requests reach the browser:
 
 - Clearly read-only command approvals are answered automatically. This includes list/read/search actions and common commands such as `ls`, `rg`, `grep`, `cat`, `sed -n`, `git status`, `git diff`, `git log`, and `git show`.
 - MCP server elicitation approvals are accepted automatically by default. Set `CODEX_WEB_AUTO_APPROVE_MCP=off` if you want those prompts to reach the browser.
@@ -203,11 +203,11 @@ This keeps read-heavy Codex runs moving while preserving a manual checkpoint for
 | Script | Description |
 | --- | --- |
 | `npm run dev` | Start the custom Next.js and WebSocket server with `tsx`. |
-| `npm run dev:proxy` | Start development mode under `/codex_web` on port `3027`. |
+| `npm run dev:proxy` | Start development mode under `/codex_remote_console` on port `3027`. |
 | `npm run build` | Build the Next.js app. |
-| `npm run build:proxy` | Build with `NEXT_PUBLIC_BASE_PATH=/codex_web`. |
+| `npm run build:proxy` | Build with `NEXT_PUBLIC_BASE_PATH=/codex_remote_console`. |
 | `npm run start` | Start the production server. Requires auth configuration. |
-| `npm run start:proxy` | Build and start production mode under `/codex_web` on port `3027`. |
+| `npm run start:proxy` | Build and start production mode under `/codex_remote_console` on port `3027`. |
 | `npm run test:slash` | Test the slash command registry. |
 | `npm run test:diff` | Test server-side git diff collection. |
 | `npm run typecheck` | Run TypeScript without emitting files. |
@@ -239,7 +239,7 @@ server/
 scripts/
   gitDiff.test.ts        Git diff helper tests.
   slashCommands.test.ts  Slash command registry tests.
-  kill-codex-web.sh      Helper for stopping a local dev/proxy server.
+  kill-codex-remote-console.sh      Helper for stopping a local dev/proxy server.
 ```
 
 ## API Surface
@@ -275,7 +275,7 @@ npm run build
 npm audit --omit=dev
 ```
 
-For the `/codex_web/` proxy deployment path:
+For the `/codex_remote_console/` proxy deployment path:
 
 ```bash
 npm run check:proxy

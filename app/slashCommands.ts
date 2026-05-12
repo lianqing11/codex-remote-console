@@ -65,7 +65,7 @@ export const slashCommands: SlashCommand[] = [
     id: "keymap",
     label: "/keymap",
     description: "remap TUI shortcuts",
-    ...unsupported("Codex Web does not own the terminal TUI keymap.")
+    ...unsupported("Codex Remote Console does not own the terminal TUI keymap.")
   },
   {
     id: "experimental",
@@ -78,7 +78,7 @@ export const slashCommands: SlashCommand[] = [
     id: "autoreview",
     label: "/autoreview",
     description: "approve one retry of a recent auto-review denial",
-    ...unsupported("No recent guardian denial event is exposed to Codex Web yet.")
+    ...unsupported("No recent guardian denial event is exposed to Codex Remote Console yet.")
   },
   {
     id: "memories",
@@ -244,14 +244,14 @@ export const slashCommands: SlashCommand[] = [
   {
     id: "logout",
     label: "/logout",
-    description: "log out of Codex Web",
+    description: "log out of Codex Remote Console",
     action: "logout",
     available: true
   },
   {
     id: "exit",
     label: "/exit",
-    description: "close the selected Codex Web session",
+    description: "close the selected Codex Remote Console session",
     action: "exit-thread",
     available: true
   },
@@ -296,7 +296,7 @@ export function filterSlashCommands(query: string) {
 }
 
 export function slashCommandDisabledReason(command: SlashCommand, context: SlashCommandContext) {
-  if (!command.available) return command.disabledReason || "This command is not available in Codex Web.";
+  if (!command.available) return command.disabledReason || "This command is not available in Codex Remote Console.";
   if (command.requiresThread && !context.hasThread) return "Select or start a session first.";
   if (command.disabledDuringTurn && context.activeTurn) return "Wait for the active turn to finish first.";
   return "";

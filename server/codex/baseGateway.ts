@@ -109,7 +109,7 @@ export abstract class BaseCodexGateway {
     await this.startTransport((message) => this.handleMessage(message));
 
     this.initializeInfo = await this.request("initialize", {
-      clientInfo: { name: "codex-web", version: "0.1.0" },
+      clientInfo: { name: "codex-remote-console", version: "0.1.0" },
       capabilities: { experimentalApi: true, optOutNotificationMethods: [] }
     });
     this.notify({ method: "initialized" });

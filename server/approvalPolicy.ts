@@ -38,7 +38,7 @@ function envEnabled(name: string, defaultValue = true) {
 
 function logAutoApproval(message: string) {
   if (envEnabled("CODEX_WEB_APPROVAL_LOG", true)) {
-    console.log(`[codex-web approval] ${message}`);
+    console.log(`[codex-remote-console approval] ${message}`);
   }
 }
 

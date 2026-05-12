@@ -183,7 +183,7 @@ async function diffBetweenTrees(root: string, beforeTree: string, afterTree: str
 
 export async function gitWorkingTreeSnapshot(cwd: string) {
   const root = await gitRoot(cwd);
-  const temp = await mkdtemp(path.join(tmpdir(), "codex-web-index-"));
+  const temp = await mkdtemp(path.join(tmpdir(), "codex-remote-console-index-"));
   const indexPath = path.join(temp, "index");
   const env = { GIT_INDEX_FILE: indexPath };
 

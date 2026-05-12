@@ -259,9 +259,9 @@ type Bootstrap = {
 
 const defaultCwd = "";
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
-const promptQueueStorageKey = "codex-web.promptQueue.v1";
-const threadLayoutStorageKey = "codex-web.threadLayout";
-const sidebarWidthStorageKey = "codex-web.sidebarWidth";
+const promptQueueStorageKey = "codex-remote-console.promptQueue.v1";
+const threadLayoutStorageKey = "codex-remote-console.threadLayout";
+const sidebarWidthStorageKey = "codex-remote-console.sidebarWidth";
 const defaultSidebarWidth = 320;
 const minSidebarWidth = 240;
 const maxSidebarWidth = 520;
@@ -1857,17 +1857,17 @@ export default function Home() {
   }, [queuedPromptsByThread, selectedThread?.id, threads]);
 
     useEffect(() => {
-      const saved = window.localStorage.getItem("codex-web.cwd");
+      const saved = window.localStorage.getItem("codex-remote-console.cwd");
       if (saved) setCwd(saved);
-    const recent = window.localStorage.getItem("codex-web.recentDirs");
+    const recent = window.localStorage.getItem("codex-remote-console.recentDirs");
     if (recent) setRecentDirs(JSON.parse(recent));
-    const pinned = window.localStorage.getItem("codex-web.pinnedDirs");
+    const pinned = window.localStorage.getItem("codex-remote-console.pinnedDirs");
     if (pinned) setPinnedDirs(JSON.parse(pinned));
-    const collapsed = window.localStorage.getItem("codex-web.collapsedThreadGroups");
+    const collapsed = window.localStorage.getItem("codex-remote-console.collapsedThreadGroups");
     if (collapsed) setCollapsedThreadGroups(JSON.parse(collapsed));
     const savedThreadLayout = window.localStorage.getItem(threadLayoutStorageKey);
     if (savedThreadLayout === "directories" || savedThreadLayout === "recent") setThreadLayout(savedThreadLayout);
-    const savedSidebarCollapsed = window.localStorage.getItem("codex-web.sidebarCollapsed");
+    const savedSidebarCollapsed = window.localStorage.getItem("codex-remote-console.sidebarCollapsed");
     if (savedSidebarCollapsed === "true") setSidebarCollapsed(true);
     const savedSidebarWidth = Number(window.localStorage.getItem(sidebarWidthStorageKey));
     if (Number.isFinite(savedSidebarWidth)) setSidebarWidth(clampSidebarWidth(savedSidebarWidth));
@@ -2161,7 +2161,7 @@ export default function Home() {
   function rememberDirectory(path: string) {
     const next = [path, ...recentDirs.filter((item) => item !== path)].slice(0, 8);
     setRecentDirs(next);
-    window.localStorage.setItem("codex-web.recentDirs", JSON.stringify(next));
+    window.localStorage.setItem("codex-remote-console.recentDirs", JSON.stringify(next));
   }
 
   function togglePinnedDirectory(path: string) {
@@ -2171,7 +2171,7 @@ export default function Home() {
       const next = current.some((item) => normalizeDirectoryPath(item) === target)
         ? current.filter((item) => normalizeDirectoryPath(item) !== target)
         : [target, ...current.filter((item) => normalizeDirectoryPath(item) !== target)].slice(0, 12);
-      window.localStorage.setItem("codex-web.pinnedDirs", JSON.stringify(next));
+      window.localStorage.setItem("codex-remote-console.pinnedDirs", JSON.stringify(next));
       return next;
     });
   }
@@ -2189,7 +2189,7 @@ export default function Home() {
       const filtered = current.filter((item) => normalizeDirectoryPath(item) !== sourceNorm);
       const targetIndex = filtered.findIndex((item) => normalizeDirectoryPath(item) === targetNorm);
       const next = [...filtered.slice(0, targetIndex), sourceNorm, ...filtered.slice(targetIndex)];
-      window.localStorage.setItem("codex-web.pinnedDirs", JSON.stringify(next));
+      window.localStorage.setItem("codex-remote-console.pinnedDirs", JSON.stringify(next));
       return next;
     });
   }
@@ -2206,7 +2206,7 @@ export default function Home() {
   function toggleThreadGroup(cwd: string) {
     setCollapsedThreadGroups((current) => {
       const next = current.includes(cwd) ? current.filter((item) => item !== cwd) : [...current, cwd];
-      window.localStorage.setItem("codex-web.collapsedThreadGroups", JSON.stringify(next));
+      window.localStorage.setItem("codex-remote-console.collapsedThreadGroups", JSON.stringify(next));
       return next;
     });
   }
@@ -2218,7 +2218,7 @@ export default function Home() {
 
   function setSidebarCollapsedValue(next: boolean) {
     setSidebarCollapsed(next);
-    window.localStorage.setItem("codex-web.sidebarCollapsed", String(next));
+    window.localStorage.setItem("codex-remote-console.sidebarCollapsed", String(next));
   }
 
   function setSidebarWidthValue(width: number) {
@@ -2323,7 +2323,7 @@ export default function Home() {
       const result = await getJson<ProjectInfo>(`/api/projects/resolve?cwd=${encodeURIComponent(value)}`);
       setProject(result);
       setCwd(result.realpath);
-      window.localStorage.setItem("codex-web.cwd", result.realpath);
+      window.localStorage.setItem("codex-remote-console.cwd", result.realpath);
       rememberDirectory(result.realpath);
       return result;
     } catch (error) {
@@ -2593,7 +2593,7 @@ export default function Home() {
 
   function applyCollabPreset(preset: any) {
     if (preset?.mode !== "default" && preset?.mode !== "plan") {
-      setNotice("This collaboration mode is not mapped in Codex Web yet.");
+      setNotice("This collaboration mode is not mapped in Codex Remote Console yet.");
       return;
     }
     updateRuntimeSettings({
@@ -3465,7 +3465,7 @@ export default function Home() {
   }
 
   if (!bootstrap) {
-    return <main className="boot">Loading Codex Web...</main>;
+    return <main className="boot">Loading Codex Remote Console...</main>;
   }
 
   if (!bootstrap.authenticated) {
@@ -3473,7 +3473,7 @@ export default function Home() {
       <main className="loginShell">
         <form className="loginPanel" onSubmit={login}>
           <Code2 size={32} />
-          <h1>Codex Web</h1>
+          <h1>Codex Remote Console</h1>
           <p>Private access to server-side Codex sessions.</p>
           <input
             autoFocus
@@ -3533,7 +3533,7 @@ export default function Home() {
         <div className="brand">
           <Code2 size={24} />
           <div>
-            <h1>Codex Web</h1>
+            <h1>Codex Remote Console</h1>
             <span>{bootstrap.codexVersion}</span>
           </div>
           <div className="brandActions">
