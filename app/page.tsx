@@ -274,10 +274,32 @@ function appPath(path: string) {
   return `${basePath}${path}`;
 }
 
+function fetchBootstrap(): Promise<Bootstrap> {
+  return fetch(`${basePath}/api/bootstrap`).then(async (response) => {
+    const text = await response.text();
+    let data: unknown;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error(
+        !response.ok
+          ? `Bootstrap failed (${response.status}). If this app is behind a URL prefix (for example /codex_web/), set NEXT_PUBLIC_BASE_PATH to that exact prefix when building and when starting the server, then run a fresh build.`
+          : "Bootstrap response was not valid JSON."
+      );
+    }
+    if (!response.ok) {
+      const msg =
+        typeof (data as { error?: unknown }).error === "string"
+          ? (data as { error: string }).error
+          : `HTTP ${response.status}`;
+      throw new Error(msg);
+    }
+    return data as Bootstrap;
+  });
+}
+
 const bootstrapPromise: Promise<Bootstrap> | null =
-  typeof window === "undefined"
-    ? null
-    : fetch(`${basePath}/api/bootstrap`).then((response) => response.json());
+  typeof window === "undefined" ? null : fetchBootstrap();
 
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(appPath(path));
@@ -1063,6 +1085,7 @@ function ShortcutHints({ items }: { items: ShortcutHint[] }) {
 
 export default function Home() {
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
+  const [bootstrapError, setBootstrapError] = useState<string | null>(null);
   const [password, setPassword] = useState("");
   const [wsState, setWsState] = useState("offline");
   const [cwd, setCwd] = useState(defaultCwd);
@@ -1879,7 +1902,9 @@ export default function Home() {
           setBootstrap(nextBootstrap);
           if (!saved && nextBootstrap.defaultCwd) setCwd(nextBootstrap.defaultCwd);
         })
-        .catch((error) => setNotice(error.message));
+        .catch((error) =>
+          setBootstrapError(error instanceof Error ? error.message : String(error))
+        );
     }, []);
 
     const wsAllowed = bootstrap === null || bootstrap.authenticated === true;
@@ -3461,6 +3486,14 @@ export default function Home() {
           </footer>
         </section>
       </div>
+    );
+  }
+
+  if (bootstrapError) {
+    return (
+      <main className="boot">
+        <p className="errorText">{bootstrapError}</p>
+      </main>
     );
   }
 
