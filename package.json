@@ -1,0 +1,45 @@
+{
+  "name": "codex-web",
+  "version": "0.1.0",
+  "description": "Browser control panel for server-side Codex sessions.",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "codex-cli",
+    "nextjs",
+    "websocket"
+  ],
+  "scripts": {
+    "dev": "tsx server/index.ts",
+    "dev:proxy": "NEXT_PUBLIC_BASE_PATH=/codex_web PORT=3027 tsx server/index.ts",
+    "build": "next build",
+    "build:proxy": "NEXT_PUBLIC_BASE_PATH=/codex_web next build",
+    "start": "NODE_ENV=production tsx server/index.ts",
+    "prestart:proxy": "npm run build:proxy",
+    "start:proxy": "NODE_ENV=production NEXT_PUBLIC_BASE_PATH=/codex_web PORT=3027 tsx server/index.ts",
+    "test:slash": "tsx scripts/slashCommands.test.ts",
+    "test:diff": "tsx scripts/gitDiff.test.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run build",
+    "check:proxy": "npm run typecheck && npm run build:proxy",
+    "generate:codex-protocol": "codex app-server generate-ts --out src/generated/codex-protocol --experimental"
+  },
+  "dependencies": {
+    "lucide-react": "^0.475.0",
+    "next": "^15.5.18",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.10",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3",
+    "@types/ws": "^8.5.14",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  },
+  "overrides": {
+    "postcss": "^8.5.10"
+  }
+}
