@@ -4,63 +4,33 @@
 [![Next.js](https://img.shields.io/badge/next.js-15-black?logo=next.js)](https://nextjs.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> Run Codex on a remote machine. Control it from a browser.
+> Run Codex where your repo, tools, GPUs, and secrets already live. Control the session from any trusted browser.
 
-Codex Remote Console is a self-hosted web control panel for Codex sessions that run on a remote server, workstation, or lab machine.
-
-The Codex CLI, project files, credentials, services, and shell access stay on the remote machine. Your browser becomes the console: start or resume sessions, send prompts, approve commands, watch output, and review diffs without keeping an SSH terminal in focus.
-
-TL;DR: Codex runs where your code lives. You control it from any trusted browser.
-
-Use it when SSH is too cramped for long Codex sessions, but you still want execution to happen on the machine that already has your repo, environment, GPU, network, and secrets.
-
-## What You Get
-
-- Remote Codex sessions controlled from a browser console.
-- Server-side project picker with readable, writable, and git status checks.
-- Live stream of Codex messages, reasoning summaries, command output, plans, and file changes.
-- Browser approval controls for command approvals and `request_user_input` prompts.
-- Per-turn diff cards plus `/diff` and `/review` shortcuts for the remote working tree.
-- Private deployment support behind VPN, SSH tunnel, LAN, or a subpath reverse proxy such as `/codex_remote_console/`.
-
-Codex Remote Console is intended for trusted private environments. It is not a multi-tenant hosted service.
-
-## Screenshots
+Codex Remote Console is a self-hosted web control panel for Codex CLI sessions running on a remote server, workstation, or lab machine. The Codex CLI, project files, credentials, services, shell access, and network access stay on that remote machine; your browser becomes the console for prompts, approvals, runtime settings, output, and diffs.
 
 ![Codex Remote Console session overview](docs/images/console-overview.svg)
 
-| Private login | Remote control flow | Browser approvals |
-| --- | --- | --- |
-| ![Password login for Codex Remote Console](docs/images/login.png) | ![Remote browser-to-Codex control flow](docs/images/remote-flow.svg) | ![Codex command approvals in the browser](docs/images/approval-flow.svg) |
+Demo status: this repository currently ships a static UI overview. The README should use a real 5-second GIF once recorded: browser prompt -> remote command approval/output -> per-turn diff card. That asset is intentionally not faked here.
 
-## Quick Start
+## Why This Exists
 
-Requirements:
+SSH plus tmux is excellent for terminal work, but long Codex sessions have more state than a terminal: approvals, user-input prompts, runtime settings, session history, and reviewable code diffs.
 
-- Node.js `18.18+` and npm.
-- The `codex` CLI installed on the remote machine and available on the server `PATH`.
-- Codex authenticated for the same remote OS user that starts this server.
-- Filesystem access on the remote machine to the project directories you want Codex to edit.
+ttyd exposes a shell in the browser, and code-server exposes a full IDE. Codex Remote Console is narrower: a browser control plane for Codex sessions that should keep executing on the machine where the code and environment already are.
 
-Install dependencies:
+Use it when execution must remain server-side, but the control surface should be easier to use from a laptop, iPad, phone, or locked-down work machine than a persistent SSH terminal.
 
-```bash
-npm install
-```
+## Status
 
-Start the console on the same remote machine where Codex should run:
+Alpha. It is suitable for personal and lab-style private deployments behind a trusted network, VPN, SSH tunnel, or reverse proxy with authentication. It is not designed as a public multi-tenant hosted service, and breaking changes are still possible.
 
-```bash
-CODEX_WEB_PASSWORD='change-me' PORT=3027 npm run dev
-```
+Current roadmap:
 
-Open:
-
-```text
-http://<remote-host>:3027
-```
-
-If you are testing locally on the same machine, use `http://localhost:3027`. The server binds to `0.0.0.0` by default so reverse proxies and LAN access can reach it.
+- Real product demo GIF and first-viewport screenshot.
+- Harder deployment docs for HTTPS, process managers, and reverse proxies.
+- Better session search, filtering, and archival workflows.
+- More explicit audit logs for approvals and auto-approvals.
+- Production hardening before any internet-facing deployment guidance.
 
 ## Security Model
 
@@ -71,40 +41,65 @@ Before exposing it beyond your own machine:
 - Set `CODEX_WEB_PASSWORD` or `CODEX_WEB_TOKEN`.
 - Use a strong `CODEX_WEB_SECRET` so session cookies are not tied to a login credential.
 - Put the app behind HTTPS, a trusted private network, VPN, SSH tunnel, or equivalent access control.
-- Do not publish `.env`, shell history, logs, screenshots, or README examples containing real passwords, tokens, hostnames, usernames, or project paths.
+- Do not publish `.env`, shell history, logs, screenshots, or README examples containing real passwords, tokens, private hostnames, private usernames, or sensitive project paths.
 
 Production mode refuses to start unless `CODEX_WEB_PASSWORD` or `CODEX_WEB_TOKEN` is set.
+
+## Quick Start
+
+From this repository checkout, run:
+
+```bash
+npm install
+CODEX_WEB_PASSWORD='change-me' PORT=3027 npm run dev
+```
+
+Open:
+
+```text
+http://<remote-host>:3027
+```
+
+If you are testing on the same machine, use `http://localhost:3027`. The server binds to `0.0.0.0` by default so LAN access and reverse proxies can reach it.
+
+Requirements:
+
+- Node.js `18.18+` and npm.
+- The `codex` CLI installed on the remote machine and available on the server `PATH`.
+- Codex authenticated for the same remote OS user that starts this server.
+- Filesystem access on the remote machine to the project directories you want Codex to edit.
+
+## Typical Setup
+
+Lab GPU machine: run Codex Remote Console on the GPU box where the repo, Conda environment, datasets, CUDA stack, and private network are already configured. Connect from an iPad or company laptop to prompt Codex, approve commands, and inspect diffs without moving the workload.
+
+Home workstation: leave the workstation running the Codex CLI and local services. When away from the desk, connect through a VPN or SSH tunnel from a phone or laptop to approve a command, answer a prompt, or check the latest diff.
+
+Private reverse proxy: serve the app under a path such as `/codex_web/` behind your existing auth, TLS, and network controls, while the Node process continues to run as the remote development user.
 
 ## Features
 
 - Start, resume, close, interrupt, and archive remote Codex threads.
 - Pick remote project directories from server-side suggestions, recent selections, trusted Codex projects, or manual absolute paths.
 - Browse child directories without exposing arbitrary local file contents.
-- Stream remote Codex protocol events to connected browsers over WebSocket.
+- Stream Codex messages, reasoning summaries, command output, plans, and file changes over WebSocket.
 - Keep Codex sessions alive when the browser disconnects.
 - Switch runtime settings from the UI, including model, reasoning effort, sandbox mode, approval policy, collaboration mode, and service tier.
+- Handle command approvals and `request_user_input` prompts in the browser.
 - Auto-approve clearly read-only command approvals while preserving manual checkpoints for destructive commands.
 - Record a git snapshot before each Codex turn and show the resulting code diff inline after the turn.
 - Use slash commands such as `/diff`, `/review`, `/model`, `/permissions`, `/plan`, `/mcp`, `/plugins`, `/skills`, `/status`, and `/logout`.
 - Serve under a configurable base path for reverse proxy deployments.
 
+## Screenshots
+
+| Private login | Remote control flow | Browser approvals |
+| --- | --- | --- |
+| ![Password login for Codex Remote Console](docs/images/login.png) | ![Remote browser-to-Codex control flow](docs/images/remote-flow.svg) | ![Codex command approvals in the browser](docs/images/approval-flow.svg) |
+
 ## How It Works
 
-```text
-Browser on your laptop
-  |
-  | HTTP + WebSocket
-  v
-Codex Remote Console on the remote machine
-  Next.js UI + custom Node server
-  |
-  | JSON-RPC over stdio by default
-  v
-codex app-server on the remote machine
-  |
-  v
-Remote project directories
-```
+![Remote browser-to-Codex control flow](docs/images/remote-flow.svg)
 
 The custom server in `server/index.ts` runs on the remote machine. It prepares the Next.js app, serves API routes, and accepts browser WebSocket connections at `/ws`.
 
@@ -121,6 +116,8 @@ Thread starts and resumes are adjusted with persistent history defaults:
 - `ephemeral: false`
 - `experimentalRawEvents: false`
 - `persistExtendedHistory: true`
+
+For local browser routes, see [docs/API.md](docs/API.md).
 
 ## Authentication
 
@@ -147,11 +144,11 @@ The login flow creates an HTTP-only session cookie signed with `CODEX_WEB_SECRET
 
 ## Reverse Proxy
 
-For a subpath deployment at `/codex_remote_console/`, build and run with the same base path:
+For a subpath deployment at `/codex_web/`, build and run with the same base path:
 
 ```bash
-NEXT_PUBLIC_BASE_PATH=/codex_remote_console npm run build
-NODE_ENV=production NEXT_PUBLIC_BASE_PATH=/codex_remote_console CODEX_WEB_PASSWORD='change-me' PORT=3027 npm run start
+NEXT_PUBLIC_BASE_PATH=/codex_web npm run build
+NODE_ENV=production NEXT_PUBLIC_BASE_PATH=/codex_web CODEX_WEB_PASSWORD='change-me' PORT=3027 npm run start
 ```
 
 The bundled scripts provide the same default base path and port.
@@ -171,7 +168,7 @@ CODEX_WEB_PASSWORD='change-me' CODEX_WEB_SECRET='replace-with-random-secret' npm
 Map your reverse proxy route to the backend server:
 
 ```text
-https://your-host.example/codex_remote_console/ -> http://127.0.0.1:3027
+https://your-host.example/codex_web/ -> http://127.0.0.1:3027
 ```
 
 If you use a different proxy path, set `NEXT_PUBLIC_BASE_PATH` to that exact path at build time and runtime.
@@ -183,7 +180,7 @@ If you use a different proxy path, set `NEXT_PUBLIC_BASE_PATH` to that exact pat
 | `PORT` | HTTP server port. | `3000` |
 | `CODEX_WEB_PORT` | Fallback HTTP server port when `PORT` is not set. | unset |
 | `HOST` | HTTP bind host. | `0.0.0.0` |
-| `NEXT_PUBLIC_BASE_PATH` | Base path for proxy deployments, for example `/codex_remote_console`. | unset |
+| `NEXT_PUBLIC_BASE_PATH` | Base path for proxy deployments, for example `/codex_web`. | unset |
 | `CODEX_WEB_PASSWORD` | Enables password login and satisfies production auth. | unset |
 | `CODEX_WEB_TOKEN` | Enables token login and satisfies production auth. | unset |
 | `CODEX_WEB_AUTH` | Set to `on` to require auth in development even without a password or token. | unset |
@@ -217,11 +214,11 @@ This keeps read-heavy Codex runs moving while preserving a manual checkpoint for
 | Script | Description |
 | --- | --- |
 | `npm run dev` | Start the custom Next.js and WebSocket server with `tsx`. |
-| `npm run dev:proxy` | Start development mode under `/codex_remote_console` on port `3027`. |
+| `npm run dev:proxy` | Start development mode under `/codex_web` on port `3027`. |
 | `npm run build` | Build the Next.js app. |
-| `npm run build:proxy` | Build with `NEXT_PUBLIC_BASE_PATH=/codex_remote_console`. |
+| `npm run build:proxy` | Build with `NEXT_PUBLIC_BASE_PATH=/codex_web`. |
 | `npm run start` | Start the production server. Requires auth configuration. |
-| `npm run start:proxy` | Build and start production mode under `/codex_remote_console` on port `3027`. |
+| `npm run start:proxy` | Build and start production mode under `/codex_web` on port `3027`. |
 | `npm run test:slash` | Test the slash command registry. |
 | `npm run test:diff` | Test server-side git diff collection. |
 | `npm run typecheck` | Run TypeScript without emitting files. |
@@ -244,11 +241,15 @@ server/
   auth.ts           Password/token login and signed session cookies.
   codex/            Lifecycle and stdio/ws JSON-RPC transports for `codex app-server`.
   codexGateway.ts   Compatibility export for the Codex gateway factory.
-  gitDiff.ts        Working-tree snapshot and diff collection.
+  gitDiff.ts        Working-tree snapshot, file preview, and diff collection.
   http.ts           JSON response/request helpers.
   index.ts          Custom HTTP, Next.js, API, and WebSocket server.
   project.ts        Project path resolution, directory browsing, and suggestions.
   types.ts          Shared server protocol types.
+
+docs/
+  API.md            Browser-local HTTP and WebSocket route reference.
+  images/           README screenshots and diagrams.
 
 scripts/
   gitDiff.test.ts        Git diff helper tests.
@@ -256,21 +257,19 @@ scripts/
   kill-codex-remote-console.sh      Helper for stopping a local dev/proxy server.
 ```
 
-## API Surface
+## Repository Metadata
 
-The browser uses these local routes:
+Suggested GitHub About text:
 
-| Route | Method | Purpose |
-| --- | --- | --- |
-| `/api/bootstrap` | `GET` | Check auth state, Codex version, and gateway snapshot. |
-| `/api/auth/login` | `POST` | Log in with the configured password or token. |
-| `/api/auth/logout` | `POST` | Clear the session cookie. |
-| `/api/projects/suggestions` | `GET` | Return suggested server project directories. |
-| `/api/projects/resolve?cwd=...` | `GET` | Validate and resolve an absolute project directory. |
-| `/api/projects/list?cwd=...` | `GET` | List child directories for the server-side picker. |
-| `/api/projects/diff?cwd=...` | `GET` | Return working-tree status, file stats, and unified diff. |
-| `/api/projects/diff-snapshot` | `POST` | Record a git tree snapshot used for per-turn diff cards. |
-| `/ws` | WebSocket | Browser-to-server Codex bridge. |
+```text
+Self-hosted browser console for controlling Codex CLI sessions on a remote machine.
+```
+
+Suggested GitHub topics:
+
+```text
+codex, codex-cli, remote-development, webui, ai-coding, self-hosted, nextjs, websocket
+```
 
 ## Development
 
@@ -289,7 +288,7 @@ npm run build
 npm audit --omit=dev
 ```
 
-For the `/codex_remote_console/` proxy deployment path:
+For the `/codex_web/` proxy deployment path:
 
 ```bash
 npm run check:proxy

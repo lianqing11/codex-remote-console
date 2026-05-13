@@ -1,11 +1,15 @@
 {
   "name": "codex-remote-console",
   "version": "0.1.0",
-  "description": "Browser control panel for server-side Codex sessions.",
+  "description": "Self-hosted browser console for controlling Codex CLI sessions on a remote machine.",
   "license": "MIT",
   "keywords": [
     "codex",
     "codex-cli",
+    "remote-development",
+    "webui",
+    "ai-coding",
+    "self-hosted",
     "nextjs",
     "websocket"
   ],
