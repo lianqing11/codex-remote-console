@@ -8,9 +8,9 @@
 
 Codex Remote Console is a self-hosted web control panel for Codex CLI sessions running on a remote server, workstation, or lab machine. The Codex CLI, project files, credentials, services, shell access, and network access stay on that remote machine; your browser becomes the console for prompts, approvals, runtime settings, output, and diffs.
 
-![Codex Remote Console session overview](docs/images/console-overview.svg)
+![Codex Remote Console current flow demo](docs/images/demo.gif)
 
-Demo status: this repository currently ships a static UI overview. The README should use a real 5-second GIF once recorded: browser prompt -> remote command approval/output -> per-turn diff card. That asset is intentionally not faked here.
+Current flow demo: prompt from the browser, remote Codex work, browser approval, streamed command output, then a per-turn diff card.
 
 ## Why This Exists
 
@@ -26,7 +26,7 @@ Alpha. It is suitable for personal and lab-style private deployments behind a tr
 
 Current roadmap:
 
-- Real product demo GIF and first-viewport screenshot.
+- Browser-recorded demo GIF to replace the generated current-flow demo.
 - Harder deployment docs for HTTPS, process managers, and reverse proxies.
 - Better session search, filtering, and archival workflows.
 - More explicit audit logs for approvals and auto-approvals.
@@ -92,6 +92,8 @@ Private reverse proxy: serve the app under a path such as `/codex_web/` behind y
 - Serve under a configurable base path for reverse proxy deployments.
 
 ## Screenshots
+
+![Codex Remote Console session overview](docs/images/console-overview.svg)
 
 | Private login | Remote control flow | Browser approvals |
 | --- | --- | --- |
