@@ -4,7 +4,13 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { gitWorkingTreeDiff, gitWorkingTreeDiffFromSnapshot, gitWorkingTreeSnapshot } from "../server/gitDiff";
+import {
+  gitTreeFile,
+  gitWorkingTreeDiff,
+  gitWorkingTreeDiffFromSnapshot,
+  gitWorkingTreeFile,
+  gitWorkingTreeSnapshot
+} from "../server/gitDiff";
 
 const execFileAsync = promisify(execFile);
 
@@ -58,6 +64,28 @@ async function main() {
     assert.equal(result.files.some((file) => file.path === "tracked.txt"), false);
     assert.match(result.diff, /diff --git a\/after\.txt b\/after\.txt/);
     assert.match(result.diff, /diff --git a\/before\.txt b\/before\.txt/);
+
+    const current = await gitWorkingTreeFile(repo, "before.txt");
+    assert.equal(current.exists, true);
+    assert.match(current.content || "", /changed now/);
+
+    const before = await gitTreeFile(repo, snapshot.tree, "before.txt");
+    assert.equal(before.exists, true);
+    assert.equal(before.content, "already here\n");
+
+    const missingBefore = await gitTreeFile(repo, snapshot.tree, "after.txt");
+    assert.equal(missingBefore.exists, false);
+
+    const directoryBefore = await gitTreeFile(repo, snapshot.tree, ".");
+    assert.equal(directoryBefore.exists, false);
+  });
+
+  await withRepo(async (repo) => {
+    await assert.rejects(gitWorkingTreeFile(repo, "../outside.txt"), /repository-relative/);
+    await writeFile(path.join(repo, "binary.bin"), Buffer.from([0, 1, 2, 3]));
+    const binary = await gitWorkingTreeFile(repo, "binary.bin");
+    assert.equal(binary.binary, true);
+    assert.equal(binary.content, null);
   });
 
   await withRepo(async (repo) => {

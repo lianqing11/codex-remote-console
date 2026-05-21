@@ -157,6 +157,12 @@ type QueuedPrompt = {
   createdAt: number;
 };
 
+type CompletionPopup = {
+  id: string;
+  title: string;
+  detail: string;
+};
+
 type ServerRequest = {
   id: JsonRpcId;
   method: string;
@@ -218,6 +224,8 @@ type ProjectDiff = {
   additions: number;
   deletions: number;
   hasChanges: boolean;
+  baseTree?: string | null;
+  currentTree?: string | null;
 };
 
 type DiffSnapshot = {
@@ -228,6 +236,18 @@ type DiffSnapshot = {
 type TurnDiffBaseline = {
   cwd: string;
   tree: string;
+};
+
+type FilePreview = {
+  root: string;
+  path: string;
+  source: "workingTree" | "tree";
+  tree: string | null;
+  exists: boolean;
+  size: number;
+  binary: boolean;
+  tooLarge: boolean;
+  content: string | null;
 };
 
 type Attachment = {
@@ -795,34 +815,51 @@ function diffFiles(diff: string) {
 type DiffLine = {
   kind: "add" | "delete" | "hunk" | "meta" | "context";
   text: string;
+  oldLine: number | null;
+  newLine: number | null;
 };
 
 type DiffSection = {
   file: string;
   lines: DiffLine[];
+  additions: number;
+  deletions: number;
 };
 
 function parseUnifiedDiff(diff: string): DiffSection[] {
   const sections: DiffSection[] = [];
   let current: DiffSection | null = null;
+  let oldLine = 0;
+  let newLine = 0;
 
   for (const line of diff.split("\n")) {
     const fileMatch = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
     if (fileMatch) {
-      current = { file: fileMatch[2] || fileMatch[1], lines: [{ kind: "meta", text: line }] };
+      current = {
+        file: fileMatch[2] || fileMatch[1],
+        lines: [{ kind: "meta", text: line, oldLine: null, newLine: null }],
+        additions: 0,
+        deletions: 0
+      };
       sections.push(current);
       continue;
     }
 
     if (!current) {
-      current = { file: "Diff", lines: [] };
+      current = { file: "Diff", lines: [], additions: 0, deletions: 0 };
       sections.push(current);
     }
 
+    const hunkMatch = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunkMatch) {
+      oldLine = Number(hunkMatch[1]);
+      newLine = Number(hunkMatch[2]);
+      current.lines.push({ kind: "hunk", text: line, oldLine: null, newLine: null });
+      continue;
+    }
+
     const kind: DiffLine["kind"] =
-      line.startsWith("@@")
-        ? "hunk"
-        : line.startsWith("+") && !line.startsWith("+++")
+      line.startsWith("+") && !line.startsWith("+++")
           ? "add"
           : line.startsWith("-") && !line.startsWith("---")
             ? "delete"
@@ -835,10 +872,93 @@ function parseUnifiedDiff(diff: string): DiffSection[] {
                 line.startsWith("+++")
               ? "meta"
               : "context";
-    current.lines.push({ kind, text: line });
+
+    if (kind === "add") {
+      current.additions += 1;
+      current.lines.push({ kind, text: line, oldLine: null, newLine });
+      newLine += 1;
+    } else if (kind === "delete") {
+      current.deletions += 1;
+      current.lines.push({ kind, text: line, oldLine, newLine: null });
+      oldLine += 1;
+    } else if (kind === "context" && (line.startsWith(" ") || line === "")) {
+      current.lines.push({ kind, text: line, oldLine, newLine });
+      oldLine += 1;
+      newLine += 1;
+    } else {
+      current.lines.push({ kind, text: line, oldLine: null, newLine: null });
+    }
   }
 
   return sections;
+}
+
+function projectDiffFromItem(item: ThreadItem) {
+  return item.projectDiff && typeof item.projectDiff === "object" ? (item.projectDiff as ProjectDiff) : null;
+}
+
+function diffStats(item: ThreadItem) {
+  const projectDiff = projectDiffFromItem(item);
+  if (projectDiff) {
+    return {
+      files: projectDiff.files.length,
+      additions: projectDiff.additions,
+      deletions: projectDiff.deletions,
+      statuses: [...new Set(projectDiff.files.map((file) => file.status))]
+    };
+  }
+
+  const text = itemText(item);
+  return {
+    files: diffFiles(text).length,
+    additions: text.split("\n").filter((line) => line.startsWith("+") && !line.startsWith("+++")).length,
+    deletions: text.split("\n").filter((line) => line.startsWith("-") && !line.startsWith("---")).length,
+    statuses: []
+  };
+}
+
+function languageForPath(filePath: string) {
+  const ext = filePath.split(".").pop()?.toLowerCase() || "";
+  if (["ts", "tsx", "js", "jsx", "mjs", "cjs"].includes(ext)) return "typescript";
+  if (["py"].includes(ext)) return "python";
+  if (["json", "jsonl"].includes(ext)) return "json";
+  if (["md", "mdx"].includes(ext)) return "markdown";
+  if (["sh", "bash", "zsh"].includes(ext)) return "shell";
+  if (["css", "scss"].includes(ext)) return "css";
+  return "text";
+}
+
+function codeTokens(line: string, language: string) {
+  const patterns =
+    language === "json"
+      ? /("(?:\\.|[^"\\])*"(?=\s*:)|"(?:\\.|[^"\\])*"|-?\b\d+(?:\.\d+)?\b|\btrue\b|\bfalse\b|\bnull\b)/g
+      : language === "markdown"
+        ? /(`[^`]+`|^#{1,6}\s.*|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/g
+        : /(\/\/.*$|#.*$|\/\*.*?\*\/|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\b(?:async|await|break|case|catch|class|const|continue|def|else|export|extends|false|finally|for|from|function|if|import|in|interface|let|null|return|true|try|type|while|yield)\b|-?\b\d+(?:\.\d+)?\b)/g;
+  const tokens: Array<{ text: string; kind: string }> = [];
+  let lastIndex = 0;
+
+  for (const match of line.matchAll(patterns)) {
+    const text = match[0];
+    const index = match.index || 0;
+    if (index > lastIndex) tokens.push({ text: line.slice(lastIndex, index), kind: "plain" });
+    const kind = /^["'`]/.test(text)
+      ? language === "json" && /"\s*$/.test(text)
+        ? "key"
+        : "string"
+      : /^(\/\/|#|\/\*)/.test(text)
+        ? "comment"
+        : /^-?\d/.test(text) || ["true", "false", "null"].includes(text)
+          ? "number"
+          : language === "markdown"
+            ? "markup"
+            : "keyword";
+    tokens.push({ text, kind });
+    lastIndex = index + text.length;
+  }
+
+  if (lastIndex < line.length) tokens.push({ text: line.slice(lastIndex), kind: "plain" });
+  return tokens.length ? tokens : [{ text: line || " ", kind: "plain" }];
 }
 
 function compactTokens(n: number) {
@@ -1106,6 +1226,7 @@ export default function Home() {
   const [tokenUsageByThread, setTokenUsageByThread] = useState<Record<string, unknown>>({});
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [notice, setNotice] = useState("");
+  const [completionPopup, setCompletionPopup] = useState<CompletionPopup | null>(null);
   const [recentDirs, setRecentDirs] = useState<string[]>([]);
   const [pinnedDirs, setPinnedDirs] = useState<string[]>([]);
   const [collapsedThreadGroups, setCollapsedThreadGroups] = useState<string[]>([]);
@@ -1150,6 +1271,8 @@ export default function Home() {
   const requestSeq = useRef(1);
   const sessionManagerRequestSeq = useRef(0);
   const turnDiffBaselines = useRef(new Map<string, TurnDiffBaseline>());
+  const completedTurnNotifications = useRef(new Set<string>());
+  const completionPopupTimer = useRef<number | null>(null);
 
   const currentThreadKey = selectedThread?.id || "";
   const items = itemsByThread[currentThreadKey] || EMPTY_ITEMS;
@@ -1250,6 +1373,9 @@ export default function Home() {
   const renderedItems = useDeferredValue(items);
   const mode = runtimeSettings.mode;
   const sessionModel = runtimeSettings.model;
+  const fastModeEnabled = runtimeSettings.serviceTier === "fast";
+  const fastModeText = `Fast mode: ${fastModeEnabled ? "on" : "off"}`;
+  const serviceTierText = runtimeSettings.serviceTier || "server default";
   const activeTurnId = selectedThread ? activeTurnIdsByThread[selectedThread.id] || null : null;
   const selectedQueuedPrompts = selectedThread ? queuedPromptsByThread[selectedThread.id] || [] : [];
   const nextQueuedPrompt = selectedQueuedPrompts[0] || null;
@@ -1588,8 +1714,8 @@ export default function Home() {
     [codex, sessionManagerArchived, sessionManagerSearch, wsState]
   );
 
-  function updateRuntimeSettings(next: Partial<SessionRuntimeSettings>) {
-    setRuntimeSettings((current) => ({ ...current, ...next }));
+  function updateRuntimeSettings(next: Partial<SessionRuntimeSettings> | ((current: SessionRuntimeSettings) => Partial<SessionRuntimeSettings>)) {
+    setRuntimeSettings((current) => ({ ...current, ...(typeof next === "function" ? next(current) : next) }));
   }
 
   const collaborationMode = useCallback((modelOverride?: string, turnMode: ModeKind = runtimeSettings.mode) => {
@@ -1623,6 +1749,19 @@ export default function Home() {
     },
     [registerTurnItem, setItemOrderForThread, setItemsForThread]
   );
+
+  const showCompletionPopup = useCallback((threadId: string, turn?: Turn) => {
+    const popupId = `${threadId}:${turn?.id || Date.now()}`;
+    const userItem = turn?.items?.find((item) => item.type === "userMessage");
+    const title = compactText(userItem ? itemText(userItem) : "", 96) || "Codex task completed";
+    const detail = `Completed ${formatTime(turn?.completedAt || nowSeconds())}`;
+
+    setCompletionPopup({ id: popupId, title, detail });
+    if (completionPopupTimer.current) window.clearTimeout(completionPopupTimer.current);
+    completionPopupTimer.current = window.setTimeout(() => {
+      setCompletionPopup((current) => (current?.id === popupId ? null : current));
+    }, 7000);
+  }, []);
 
   const applyNotification = useCallback(
     (message: { method: string; params?: any }) => {
@@ -1694,6 +1833,12 @@ export default function Home() {
         updateActiveTurn(tid, null, turn?.id);
         clearPending(tid);
         if (turn?.id) {
+          const completionKey = `${tid}:${turn.id}`;
+          if (!completedTurnNotifications.current.has(completionKey)) {
+            completedTurnNotifications.current.add(completionKey);
+            showCompletionPopup(tid, turn);
+          }
+
           const turnItems = turn.items || [];
           setItemsForThread(tid, (current) => {
             const next = { ...current };
@@ -1864,12 +2009,19 @@ export default function Home() {
         });
       }
     },
-    [loadCompletedTurnDiff, registerTurnItem, setItemOrderForThread, setItemsForThread, setTurnOrderForThread, setTurnsForThread, updateActiveTurn]
+    [loadCompletedTurnDiff, registerTurnItem, setItemOrderForThread, setItemsForThread, setTurnOrderForThread, setTurnsForThread, showCompletionPopup, updateActiveTurn]
   );
 
   useEffect(() => {
     selectedThreadIdRef.current = selectedThread?.id || null;
   }, [selectedThread?.id]);
+
+  useEffect(
+    () => () => {
+      if (completionPopupTimer.current) window.clearTimeout(completionPopupTimer.current);
+    },
+    []
+  );
 
   useEffect(() => {
     const next = new Set<string>();
@@ -2385,12 +2537,12 @@ export default function Home() {
     setMobilePanel(null);
     setThreads((current) => [thread, ...current.filter((item) => item.id !== thread.id)]);
 
-    updateRuntimeSettings({
-      model: threadResponse.model || runtimeSettings.model,
-      reasoningEffort: threadResponse.reasoningEffort ?? runtimeSettings.reasoningEffort,
-      serviceTier: threadResponse.serviceTier ?? runtimeSettings.serviceTier,
-      approvalPolicy: threadResponse.approvalPolicy ?? runtimeSettings.approvalPolicy
-    });
+    updateRuntimeSettings((current) => ({
+      model: threadResponse.model || current.model,
+      reasoningEffort: threadResponse.reasoningEffort ?? current.reasoningEffort,
+      serviceTier: current.serviceTier ?? threadResponse.serviceTier ?? null,
+      approvalPolicy: threadResponse.approvalPolicy ?? current.approvalPolicy
+    }));
 
     if (initialPrompt || initialAttachments.length) {
       await sendToThread(thread.id, initialPrompt || "", threadResponse.model || "", initialAttachments);
@@ -2425,12 +2577,12 @@ export default function Home() {
     setSelectedThread(resumed);
     updateActiveTurn(resumed.id, activeTurnIdFromTurns(resumed.turns || []));
     setThreads((current) => [resumed, ...current.filter((candidate) => candidate.id !== resumed.id)]);
-    updateRuntimeSettings({
-      model: response.model || runtimeSettings.model,
-      reasoningEffort: response.reasoningEffort ?? runtimeSettings.reasoningEffort,
-      serviceTier: response.serviceTier ?? runtimeSettings.serviceTier,
-      approvalPolicy: response.approvalPolicy ?? runtimeSettings.approvalPolicy
-    });
+    updateRuntimeSettings((current) => ({
+      model: response.model || current.model,
+      reasoningEffort: response.reasoningEffort ?? current.reasoningEffort,
+      serviceTier: current.serviceTier ?? response.serviceTier ?? null,
+      approvalPolicy: response.approvalPolicy ?? current.approvalPolicy
+    }));
     setPendingPromptByThread((current) => ({ ...current, [resumed.id]: "" }));
     applyItemsFromTurns(resumed.id, resumed.turns || []);
   }
@@ -2671,13 +2823,13 @@ export default function Home() {
     updateActiveTurn(resumed.id, activeTurnIdFromTurns(resumed.turns || []));
     setThreads((current) => [resumed, ...current.filter((candidate) => candidate.id !== resumed.id)]);
     applyItemsFromTurns(resumed.id, resumed.turns || []);
-    updateRuntimeSettings({
-      ...nextSettings,
-      model: response.model || nextSettings.model,
-      reasoningEffort: response.reasoningEffort ?? nextSettings.reasoningEffort,
-      serviceTier: response.serviceTier ?? nextSettings.serviceTier,
-      approvalPolicy: response.approvalPolicy ?? nextSettings.approvalPolicy
-    });
+    updateRuntimeSettings((current) => ({
+      model: response.model || current.model,
+      reasoningEffort: response.reasoningEffort ?? current.reasoningEffort,
+      serviceTier: current.serviceTier ?? response.serviceTier ?? null,
+      approvalPolicy: response.approvalPolicy ?? current.approvalPolicy,
+      sandboxMode: nextSettings.sandboxMode
+    }));
     setNotice("Permissions refreshed for the idle session.");
   }
 
@@ -2712,12 +2864,12 @@ export default function Home() {
     updateActiveTurn(thread.id, activeTurnIdFromTurns(thread.turns || []));
     setThreads((current) => [thread, ...current.filter((item) => item.id !== thread.id)]);
     applyItemsFromTurns(thread.id, thread.turns || []);
-    updateRuntimeSettings({
-      model: response.model || runtimeSettings.model,
-      reasoningEffort: response.reasoningEffort ?? runtimeSettings.reasoningEffort,
-      serviceTier: response.serviceTier ?? runtimeSettings.serviceTier,
-      approvalPolicy: response.approvalPolicy ?? runtimeSettings.approvalPolicy
-    });
+    updateRuntimeSettings((current) => ({
+      model: response.model || current.model,
+      reasoningEffort: response.reasoningEffort ?? current.reasoningEffort,
+      serviceTier: current.serviceTier ?? response.serviceTier ?? null,
+      approvalPolicy: response.approvalPolicy ?? current.approvalPolicy
+    }));
     setNotice(ephemeral ? "Side session created." : "Session forked.");
   }
 
@@ -2779,7 +2931,7 @@ export default function Home() {
       if (command.action === "toggle-fast") {
         const serviceTier: ServiceTier = runtimeSettings.serviceTier === "fast" ? "flex" : "fast";
         updateRuntimeSettings({ serviceTier });
-        setNotice(`Service tier set to ${serviceTier}. It applies to future turns in this browser session.`);
+        setNotice(`Fast mode ${serviceTier === "fast" ? "enabled" : "disabled"} for future turns. Service tier: ${serviceTier}.`);
         return;
       }
 
@@ -3312,8 +3464,10 @@ export default function Home() {
               <dd>{runtimeSettings.model || "server default"}</dd>
               <dt>Reasoning</dt>
               <dd>{runtimeSettings.reasoningEffort || "server default"}</dd>
+              <dt>Fast mode</dt>
+              <dd>{fastModeEnabled ? "enabled" : "disabled"}</dd>
               <dt>Service tier</dt>
-              <dd>{runtimeSettings.serviceTier || "server default"}</dd>
+              <dd>{serviceTierText}</dd>
               <dt>Mode</dt>
               <dd>{modeLabel(runtimeSettings.mode)}</dd>
               <dt>Approval</dt>
@@ -3813,6 +3967,9 @@ export default function Home() {
                     {runtimeSettings.reasoningEffort}
                   </span>
                 ) : null}
+                <span className={`fastModeMeta ${fastModeEnabled ? "enabled" : ""}`} title={`Service tier: ${serviceTierText}`}>
+                  {fastModeText}
+                </span>
                 <span>{modeLabel(mode)}</span>
                 {selectedThread ? <span>{statusLabel(selectedThread.status)}</span> : null}
                 {usageLabel ? (
@@ -3864,6 +4021,20 @@ export default function Home() {
           <div className="notice">
             <span>{notice}</span>
             <button type="button" onClick={() => setNotice("")}>
+              <X size={15} />
+            </button>
+          </div>
+        ) : null}
+
+        {completionPopup ? (
+          <div className="completionPopup" role="status" aria-live="polite">
+            <Check size={18} />
+            <span>
+              <strong>Task completed</strong>
+              <small>{completionPopup.title}</small>
+              <small>{completionPopup.detail}</small>
+            </span>
+            <button type="button" aria-label="Dismiss completion message" onClick={() => setCompletionPopup(null)}>
               <X size={15} />
             </button>
           </div>
@@ -4297,7 +4468,9 @@ function TurnPanel({
   const [open, setOpen] = useState(defaultOpen || active);
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const userItem = turn.items.find((item) => item.type === "userMessage");
-  const responseItems = turn.items.filter((item) => item.type !== "userMessage").reverse();
+  const outputItems = turn.items.filter((item) => item.type !== "userMessage");
+  const diffItems = outputItems.filter((item) => item.type === "diff");
+  const responseItems = outputItems.filter((item) => item.type !== "diff").reverse();
   const hasCodexOutput = open && responseItems.length > 0;
   const title = userItem
     ? compactText(itemText(userItem), 120) || "User message"
@@ -4332,11 +4505,15 @@ function TurnPanel({
         </span>
         <span className="turnSummaryMeta">
           <span className={active || turn.pending ? "liveBadge" : ""}>{status}</span>
-          <span>{responseItems.length} response items</span>
+          <span>
+            {responseItems.length} response item{responseItems.length === 1 ? "" : "s"}
+          </span>
+          {diffItems.length ? <span>{diffItems.length} code artifact{diffItems.length === 1 ? "" : "s"}</span> : null}
         </span>
       </summary>
       {open ? (
         <div className="turnBody" ref={bodyRef}>
+          {userItem ? <MessageItem item={userItem} key={userItem.id} /> : null}
           {responseItems.map((item) => (
             <MessageItem item={item} key={item.id} streaming={(active || turn.pending) && item.type !== "userMessage"} />
           ))}
@@ -4346,29 +4523,135 @@ function TurnPanel({
               {turn.pending ? "Sending to Codex..." : "Codex is working..."}
             </div>
           ) : null}
+          <TurnCodeChanges items={diffItems} />
         </div>
       ) : null}
     </details>
   );
 }
 
-function DiffViewer({ diff }: { diff: string }) {
+function TurnCodeChanges({ items }: { items: ThreadItem[] }) {
+  const [open, setOpen] = useState(false);
+  const [selectedId, setSelectedId] = useState(items[0]?.id || "");
+  const selected = items.find((item) => item.id === selectedId) || items[0];
+
+  useEffect(() => {
+    if (!items.length) {
+      setSelectedId("");
+      return;
+    }
+    if (!items.some((item) => item.id === selectedId)) setSelectedId(items[0].id);
+  }, [items, selectedId]);
+
+  if (!items.length || !selected) return null;
+
+  const totals = items.reduce(
+    (sum, item) => {
+      const stats = diffStats(item);
+      for (const status of stats.statuses) sum.statuses.add(status);
+      sum.files += stats.files;
+      sum.additions += stats.additions;
+      sum.deletions += stats.deletions;
+      return sum;
+    },
+    { files: 0, additions: 0, deletions: 0, statuses: new Set<string>() }
+  );
+  const selectedProjectDiff = projectDiffFromItem(selected);
+
+  return (
+    <section className={`turnCodeChanges ${open ? "expanded" : ""}`}>
+      <button className="turnCodeChangesSummary" type="button" onClick={() => setOpen((current) => !current)}>
+        <span>
+          <FileDiff size={15} />
+          <strong>Code changes</strong>
+        </span>
+        <code>{totals.files} file{totals.files === 1 ? "" : "s"}</code>
+        <code>+{totals.additions} -{totals.deletions}</code>
+        {[...totals.statuses].slice(0, 3).map((status) => (
+          <small key={status}>{status}</small>
+        ))}
+        <ChevronRight className={open ? "expanded" : ""} size={15} />
+      </button>
+      {open ? (
+        <div className="turnCodeChangesBody">
+          {items.length > 1 ? (
+            <div className="segmentedMini">
+              {items.map((item, index) => {
+                const stats = diffStats(item);
+                return (
+                  <button className={item.id === selected.id ? "active" : ""} key={item.id} type="button" onClick={() => setSelectedId(item.id)}>
+                    Diff {index + 1} · {stats.files}
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+          {selectedProjectDiff ? <ProjectDiffPanel data={selectedProjectDiff} /> : <DiffViewer diff={itemText(selected)} />}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function HighlightedCode({ text, filePath, startLine = 1 }: { text: string; filePath: string; startLine?: number }) {
+  const language = languageForPath(filePath);
+  const lines = text.split("\n");
+  return (
+    <pre className="codePreviewBlock">
+      {lines.map((line, index) => (
+        <span className="codePreviewLine" key={`${index}-${line}`}>
+          <span className="codeLineNo">{startLine + index}</span>
+          <code>
+            {codeTokens(line, language).map((token, tokenIndex) => (
+              <span className={`tok tok-${token.kind}`} key={`${tokenIndex}-${token.text}`}>
+                {token.text}
+              </span>
+            ))}
+          </code>
+        </span>
+      ))}
+    </pre>
+  );
+}
+
+function DiffLineRow({ line, filePath }: { line: DiffLine; filePath: string }) {
+  const code = line.kind === "add" || line.kind === "delete" || line.kind === "context" ? line.text.slice(1) : line.text;
+  const prefix = line.kind === "add" ? "+" : line.kind === "delete" ? "-" : line.kind === "context" ? " " : "";
+  return (
+    <span className={`diffLine diffLine-${line.kind}`}>
+      <span className="diffOldNo">{line.oldLine ?? ""}</span>
+      <span className="diffNewNo">{line.newLine ?? ""}</span>
+      <span className="diffPrefix">{prefix}</span>
+      <span className="diffCode">
+        {line.kind === "hunk" || line.kind === "meta"
+          ? line.text
+          : codeTokens(code, languageForPath(filePath)).map((token, tokenIndex) => (
+              <span className={`tok tok-${token.kind}`} key={`${tokenIndex}-${token.text}`}>
+                {token.text}
+              </span>
+            ))}
+      </span>
+    </span>
+  );
+}
+
+function DiffViewer({ diff, selectedFile }: { diff: string; selectedFile?: string | null }) {
   const sections = useMemo(() => parseUnifiedDiff(diff), [diff]);
+  const visibleSections = selectedFile ? sections.filter((section) => section.file === selectedFile) : sections;
   if (!diff) return <p className="muted">No diff returned.</p>;
 
   return (
     <div className="diffViewer">
-      {sections.map((section, sectionIndex) => (
+      {visibleSections.map((section, sectionIndex) => (
         <section className="diffFile" key={`${section.file}-${sectionIndex}`}>
           <header>
             <FileText size={14} />
             <strong>{section.file}</strong>
+            <small>+{section.additions} -{section.deletions}</small>
           </header>
           <pre>
             {section.lines.map((line, lineIndex) => (
-              <span className={`diffLine diffLine-${line.kind}`} key={`${lineIndex}-${line.text}`}>
-                {line.text || " "}
-              </span>
+              <DiffLineRow filePath={section.file} line={line} key={`${lineIndex}-${line.text}`} />
             ))}
           </pre>
         </section>
@@ -4377,7 +4660,97 @@ function DiffViewer({ diff }: { diff: string }) {
   );
 }
 
+function CodePreviewDrawer({
+  diff,
+  filePath,
+  onClose
+}: {
+  diff: ProjectDiff;
+  filePath: string;
+  onClose: () => void;
+}) {
+  const [tab, setTab] = useState<"current" | "before" | "after">("current");
+  const [previews, setPreviews] = useState<Partial<Record<"current" | "before" | "after", FilePreview>>>({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const canCompare = Boolean(diff.baseTree && diff.currentTree);
+  const active = previews[tab];
+
+  const loadPreview = useCallback(
+    async (nextTab: "current" | "before" | "after") => {
+      setTab(nextTab);
+      if (previews[nextTab]) {
+        setError("");
+        return;
+      }
+      setLoading(true);
+      setError("");
+      try {
+        const query = `cwd=${encodeURIComponent(diff.root)}&path=${encodeURIComponent(filePath)}`;
+        const tree = nextTab === "before" ? diff.baseTree : nextTab === "after" ? diff.currentTree : null;
+        const preview = tree
+          ? await getJson<FilePreview>(`/api/projects/file-at-tree?${query}&tree=${encodeURIComponent(tree)}`)
+          : await getJson<FilePreview>(`/api/projects/file?${query}`);
+        setPreviews((current) => ({ ...current, [nextTab]: preview }));
+      } catch (loadError) {
+        setError(loadError instanceof Error ? loadError.message : String(loadError));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [diff.baseTree, diff.currentTree, diff.root, filePath, previews]
+  );
+
+  useEffect(() => {
+    if (!previews.current) loadPreview("current");
+  }, [loadPreview, previews.current]);
+
+  return (
+    <section className="codePreviewDrawer">
+      <header>
+        <span>
+          <Code2 size={15} />
+          <strong>{filePath}</strong>
+        </span>
+        <button className="inlineIconButton" type="button" onClick={onClose}>
+          <X size={14} />
+          Close
+        </button>
+      </header>
+      <div className="segmentedMini">
+        <button className={tab === "current" ? "active" : ""} type="button" onClick={() => loadPreview("current")}>
+          Current
+        </button>
+        <button className={tab === "before" ? "active" : ""} disabled={!canCompare} type="button" onClick={() => loadPreview("before")}>
+          Before
+        </button>
+        <button className={tab === "after" ? "active" : ""} disabled={!canCompare} type="button" onClick={() => loadPreview("after")}>
+          After
+        </button>
+      </div>
+      {loading ? <p className="muted">Loading code...</p> : null}
+      {error ? <p className="errorText">{error}</p> : null}
+      {active && !active.exists ? <p className="muted">File does not exist in this view.</p> : null}
+      {active?.tooLarge ? <p className="muted">File is too large to preview ({active.size} bytes).</p> : null}
+      {active?.binary ? <p className="muted">Binary file preview is not available.</p> : null}
+      {active?.content !== null && active?.content !== undefined ? <HighlightedCode filePath={filePath} text={active.content} /> : null}
+    </section>
+  );
+}
+
 function ProjectDiffPanel({ data }: { data: ProjectDiff | null }) {
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [codeFile, setCodeFile] = useState<string | null>(null);
+  const sections = useMemo(() => parseUnifiedDiff(data?.diff || ""), [data?.diff]);
+
+  useEffect(() => {
+    if (!data?.files.length) {
+      setSelectedFile(null);
+      return;
+    }
+    if (!selectedFile || !data.files.some((file) => file.path === selectedFile)) setSelectedFile(data.files[0].path);
+  }, [data?.files, selectedFile]);
+
   if (!data) return <p className="muted">No diff returned.</p>;
   if (!data.hasChanges) {
     return (
@@ -4401,19 +4774,63 @@ function ProjectDiffPanel({ data }: { data: ProjectDiff | null }) {
         </small>
         <small>{data.root}</small>
       </div>
-      <div className="diffFileChips">
-        {data.files.map((file) => (
-          <span key={file.path} title={file.path}>
-            <FileText size={13} />
-            {file.path}
-            <code>{file.status}</code>
-            {file.binary ? <code>binary</code> : null}
-            {file.tooLarge ? <code>large</code> : null}
-            {!file.binary && !file.tooLarge ? <small>+{file.additions} -{file.deletions}</small> : null}
-          </span>
-        ))}
+      <div className="diffBrowser">
+        <aside className="diffFileNav">
+          <button className={!selectedFile ? "selected" : ""} type="button" onClick={() => setSelectedFile(null)}>
+            <ListTree size={14} />
+            <span>All files</span>
+            <code>{data.files.length}</code>
+          </button>
+          {data.files.map((file) => (
+            <button
+              className={selectedFile === file.path ? "selected" : ""}
+              key={file.path}
+              title={file.path}
+              type="button"
+              onClick={() => setSelectedFile(file.path)}
+            >
+              <FileText size={13} />
+              <span>{file.path}</span>
+              <code>{file.status}</code>
+              {!file.binary && !file.tooLarge ? <small>+{file.additions} -{file.deletions}</small> : null}
+            </button>
+          ))}
+        </aside>
+        <section className="diffContent">
+          <div className="diffToolbar">
+            <strong>{selectedFile || "All files"}</strong>
+            <span>
+              {selectedFile
+                ? `${sections.find((section) => section.file === selectedFile)?.lines.length || 0} lines`
+                : `${sections.length} diff section${sections.length === 1 ? "" : "s"}`}
+            </span>
+            {selectedFile ? (
+              <>
+                <button type="button" onClick={() => setCodeFile(selectedFile)}>
+                  <Code2 size={14} />
+                  Open code
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    navigator.clipboard?.writeText(
+                      sections
+                        .filter((section) => section.file === selectedFile)
+                        .flatMap((section) => section.lines.map((line) => line.text))
+                        .join("\n")
+                    )
+                  }
+                >
+                  <Copy size={14} />
+                  Copy file diff
+                </button>
+              </>
+            ) : null}
+          </div>
+          <DiffViewer diff={data.diff} selectedFile={selectedFile} />
+        </section>
       </div>
-      <DiffViewer diff={data.diff} />
+      {codeFile ? <CodePreviewDrawer diff={data} filePath={codeFile} onClose={() => setCodeFile(null)} /> : null}
       <details>
         <summary>Raw git status</summary>
         <pre className="diffRaw">{data.status || "clean"}</pre>
@@ -4452,6 +4869,12 @@ const MessageItem = memo(function MessageItem({ item, streaming = false }: { ite
         <header>
           <span>You</span>
           {parts.images.length ? <code>{parts.images.length} image{parts.images.length === 1 ? "" : "s"}</code> : null}
+          {parts.text ? (
+            <button className="inlineIconButton" type="button" onClick={() => copy(parts.text)}>
+              <Copy size={14} />
+              Copy
+            </button>
+          ) : null}
         </header>
         {parts.text ? <pre>{parts.text}</pre> : null}
         {parts.images.length ? (

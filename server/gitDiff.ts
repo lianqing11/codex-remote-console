@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const maxInlineUntrackedBytes = 256 * 1024;
+const maxPreviewBytes = 512 * 1024;
 
 export type GitDiffFile = {
   path: string;
@@ -26,6 +27,20 @@ export type GitDiffResult = {
   additions: number;
   deletions: number;
   hasChanges: boolean;
+  baseTree?: string | null;
+  currentTree?: string | null;
+};
+
+export type GitFilePreview = {
+  root: string;
+  path: string;
+  source: "workingTree" | "tree";
+  tree: string | null;
+  exists: boolean;
+  size: number;
+  binary: boolean;
+  tooLarge: boolean;
+  content: string | null;
 };
 
 async function git(cwd: string, args: string[]) {
@@ -59,6 +74,13 @@ function assertInsideRoot(root: string, relativePath: string) {
   const relative = path.relative(root, target);
   if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error(`Git path escapes repository root: ${relativePath}`);
   return target;
+}
+
+function assertRepoPath(relativePath: string) {
+  if (!relativePath || path.isAbsolute(relativePath) || relativePath.split(/[\\/]+/).includes("..")) {
+    throw new Error("Use a repository-relative file path.");
+  }
+  return relativePath.replace(/\\/g, "/");
 }
 
 function parseStatus(status: string) {
@@ -203,7 +225,79 @@ export async function gitWorkingTreeDiffFromSnapshot(cwd: string, baseTree: stri
   if (!/^[0-9a-f]{40,64}$/i.test(baseTree)) throw new Error("Invalid git tree snapshot.");
   const root = await gitRoot(cwd);
   const snapshot = await gitWorkingTreeSnapshot(root);
-  return diffBetweenTrees(root, baseTree, snapshot.tree);
+  return { ...(await diffBetweenTrees(root, baseTree, snapshot.tree)), baseTree, currentTree: snapshot.tree };
+}
+
+export async function gitWorkingTreeFile(cwd: string, relativePath: string): Promise<GitFilePreview> {
+  const root = await gitRoot(cwd);
+  const repoPath = assertRepoPath(relativePath);
+  const absolutePath = assertInsideRoot(root, repoPath);
+
+  const info = await stat(absolutePath).catch(() => null);
+  if (!info || !info.isFile()) {
+    return { root, path: repoPath, source: "workingTree", tree: null, exists: false, size: 0, binary: false, tooLarge: false, content: null };
+  }
+
+  if (info.size > maxPreviewBytes) {
+    return { root, path: repoPath, source: "workingTree", tree: null, exists: true, size: info.size, binary: false, tooLarge: true, content: null };
+  }
+
+  const buffer = await readFile(absolutePath);
+  const binary = isBinary(buffer);
+  return {
+    root,
+    path: repoPath,
+    source: "workingTree",
+    tree: null,
+    exists: true,
+    size: info.size,
+    binary,
+    tooLarge: false,
+    content: binary ? null : buffer.toString("utf8")
+  };
+}
+
+export async function gitTreeFile(cwd: string, tree: string, relativePath: string): Promise<GitFilePreview> {
+  if (!/^[0-9a-f]{40,64}$/i.test(tree)) throw new Error("Invalid git tree snapshot.");
+  const root = await gitRoot(cwd);
+  const repoPath = assertRepoPath(relativePath);
+  const object = `${tree}:${repoPath}`;
+  const exists = await git(root, ["cat-file", "-e", object])
+    .then(() => true)
+    .catch(() => false);
+
+  if (!exists) {
+    return { root, path: repoPath, source: "tree", tree, exists: false, size: 0, binary: false, tooLarge: false, content: null };
+  }
+
+  const type = (await git(root, ["cat-file", "-t", object])).trim();
+  if (type !== "blob") {
+    return { root, path: repoPath, source: "tree", tree, exists: false, size: 0, binary: false, tooLarge: false, content: null };
+  }
+
+  const size = Number((await git(root, ["cat-file", "-s", object])).trim()) || 0;
+  if (size > maxPreviewBytes) {
+    return { root, path: repoPath, source: "tree", tree, exists: true, size, binary: false, tooLarge: true, content: null };
+  }
+
+  const { stdout } = await execFileAsync("git", ["-C", root, "show", object], {
+    encoding: "buffer",
+    maxBuffer: maxPreviewBytes + 1024
+  });
+  const buffer = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
+  const binary = isBinary(buffer);
+
+  return {
+    root,
+    path: repoPath,
+    source: "tree",
+    tree,
+    exists: true,
+    size,
+    binary,
+    tooLarge: false,
+    content: binary ? null : buffer.toString("utf8")
+  };
 }
 
 async function untrackedDiffs(root: string, entries: Array<{ code: string; path: string }>, files: Map<string, GitDiffFile>) {
@@ -263,6 +357,8 @@ export async function gitWorkingTreeDiff(cwd: string): Promise<GitDiffResult> {
     files: fileList,
     additions,
     deletions,
-    hasChanges: status.trim().length > 0
+    hasChanges: status.trim().length > 0,
+    baseTree: null,
+    currentTree: null
   };
 }

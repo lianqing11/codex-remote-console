@@ -5,7 +5,13 @@ import next from "next";
 import { WebSocketServer, type WebSocket } from "ws";
 import { clearSessionCookie, isAuthenticated, authEnabled, requireProductionAuth, setSessionCookie, validateLogin } from "./auth";
 import { createCodexGateway } from "./codexGateway";
-import { gitWorkingTreeDiff, gitWorkingTreeDiffFromSnapshot, gitWorkingTreeSnapshot } from "./gitDiff";
+import {
+  gitTreeFile,
+  gitWorkingTreeDiff,
+  gitWorkingTreeDiffFromSnapshot,
+  gitWorkingTreeFile,
+  gitWorkingTreeSnapshot
+} from "./gitDiff";
 import { readJson, sendError, sendJson } from "./http";
 import { listProjectDirectory, projectSuggestions, resolveProject } from "./project";
 import type { BrowserEvent, BrowserMessage, BrowserReply } from "./types";
@@ -169,6 +175,21 @@ async function handleApi(req: IncomingMessage, res: ServerResponse) {
       const body = await readJson(req);
       const cwd = body && typeof body === "object" && "cwd" in body ? String(body.cwd || "") : "";
       sendJson(res, 200, await gitWorkingTreeSnapshot(cwd));
+      return true;
+    }
+
+    if (route === "/api/projects/file" && req.method === "GET") {
+      const cwd = url.searchParams.get("cwd") || "";
+      const filePath = url.searchParams.get("path") || "";
+      sendJson(res, 200, await gitWorkingTreeFile(cwd, filePath));
+      return true;
+    }
+
+    if (route === "/api/projects/file-at-tree" && req.method === "GET") {
+      const cwd = url.searchParams.get("cwd") || "";
+      const tree = url.searchParams.get("tree") || "";
+      const filePath = url.searchParams.get("path") || "";
+      sendJson(res, 200, await gitTreeFile(cwd, tree, filePath));
       return true;
     }
   }
