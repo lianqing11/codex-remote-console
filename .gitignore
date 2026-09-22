@@ -2,13 +2,16 @@
 node_modules/
 
 # Next.js / build output
-.next/
+# Glob covers every scratch/rollback build dir; enumerating them by name
+# kept missing new ones.
+.next*/
 out/
 dist/
 coverage/
 
 # local runtime state
 .omx/
+.codex_web/
 
 # environment and logs
 .env
@@ -22,6 +25,8 @@ yarn-error.log*
 # TypeScript / editor / OS noise
 tsconfig.tsbuildinfo
 src/generated/
+__pycache__/
+*.py[cod]
 .DS_Store
 .vscode/
 .idea/

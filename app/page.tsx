@@ -5,8 +5,9 @@ import {
   ArrowUp,
   BarChart3,
   Check,
+  ChevronDown,
+  ChevronLeft,
   ChevronRight,
-  CircleStop,
   Code2,
   Copy,
   FileDiff,
@@ -16,25 +17,27 @@ import {
   GitBranch,
   History,
   Home as HomeIcon,
+  Info,
   ListTree,
+  LoaderCircle,
   LogOut,
   MessageSquare,
-  Paperclip,
   PanelLeftClose,
   PanelLeftOpen,
+  Pencil,
   Pin,
   PinOff,
   Play,
   RefreshCcw,
   RotateCcw,
   Search,
-  Send,
   ShieldCheck,
   Sparkles,
   SquarePen,
   Terminal,
   X
 } from "lucide-react";
+import dynamic from "next/dynamic";
 import {
   Fragment,
   CSSProperties,
@@ -42,7 +45,6 @@ import {
   KeyboardEvent as ReactKeyboardEvent,
   memo,
   PointerEvent as ReactPointerEvent,
-  startTransition,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -51,7 +53,6 @@ import {
   useState
 } from "react";
 import {
-  filterSlashCommands,
   findSlashCommand,
   slashCommandDisabledReason,
   type SlashCommand
@@ -59,71 +60,135 @@ import {
 import {
   buildCollaborationMode,
   defaultRuntimeSettings,
+  fastModeLabel,
+  isFastServiceTier,
+  providerRuntimeDefaults,
+  restoreProviderRuntimeSettings,
+  runtimeStorageKey,
+  mergeThreadRuntimeSettings,
   modeLabel,
+  AGENT_PROVIDER_LABELS,
+  isAgentProviderId,
+  sessionModeForThread,
   runtimePermissionDraft,
   runtimeThreadParams,
   runtimeTurnParams,
   type ApprovalPolicy,
   type ModeKind,
   type PermissionDraft,
+  type ProviderId,
   type ReasoningEffort,
   type SandboxMode,
   type ServiceTier,
   type SessionRuntimeSettings
 } from "./sessionRuntime";
+import { cursorEventToNotification } from "./cursorAdapter";
+import { appPath, getJson, postJson } from "./apiClient";
+import { ConversationPane } from "./ConversationPane";
+import { ProjectDiffPanel, userMessageParts, type ProjectDiff } from "./conversationViews";
+import { cursorMethod, cursorParams, normalizeAgentResponse, normalizeAgentThread } from "./cursorAdapter";
+import { formatBytes } from "./formatUtils";
+import {
+  formatCodexPercent,
+  formatCodexResetFull,
+  formatCodexResetShort,
+  remainingCodexPercent,
+  standardCodexRateLimit,
+  type StandardCodexRateLimit
+} from "./codexUsage";
+import {
+  formatClaudeResetRelative,
+  formatClaudeUsageLabel,
+  formatClaudeWeekReset,
+  standardClaudeRateLimit,
+  type StandardClaudeRateLimit
+} from "./claudeUsage";
+import {
+  formatCursorUsageLabel,
+  formatCursorUsageTitle,
+  formatCursorUsedPercent,
+  parseCursorUsage,
+  type CursorUsageSnapshot
+} from "./cursorUsage";
+import { AgentFleet, FleetSessionRow } from "./AgentFleet";
+import { Composer, type ComposerHandle } from "./Composer";
+import { deriveSessionExecutionState } from "./sessionExecution";
+import {
+  expandFileContext,
+  isMentionablePath,
+  removeChip,
+  sliceFileLines,
+  upsertChip,
+  type FileContextChip,
+  type FileMentionHit
+} from "./fileContext";
+import {
+  type ProjectFilePreview,
+  type ProjectTreeListing
+} from "./projectFileUtils";
+import {
+  attentionThreadKeys,
+  buildFleetSections,
+  reconcileActiveTurns,
+  type FleetRequestSource,
+  type FleetThreadSource
+} from "./fleetModel";
+import {
+  activeTurnIdFromTurns,
+  deriveSessionPhase,
+  epochSeconds,
+  formatTime,
+  compareThreadsByRecency,
+  hydrateListedThread,
+  isUserMessageItem,
+  mergeThreadsById,
+  patchListedThread,
+  nativeThreadId,
+  normalizeThread,
+  normalizeThreads,
+  nowSeconds,
+  providerFromThreadKey,
+  providerOf,
+  statusLabel,
+  threadIsActive,
+  threadKey,
+  threadStatusText,
+  threadTitle,
+  turnsHaveItems,
+  uniqueAppend,
+  uniqueItems,
+  type Thread,
+  type ThreadItem,
+  type Turn
+} from "./threadModel";
+import {
+  applyItemsFromTurns,
+  clearPendingPrompt,
+  discardThreadView,
+  getThreadViewState,
+  latestPlanTextFor,
+  registerTurnItem,
+  reconcileQueuePendingPrompt,
+  setItemOrderForThread,
+  setItemsForThread,
+  setPendingPromptForThread,
+  setTurnOrderForThread,
+  setTurnsForThread,
+  threadViewHasConversationHistory,
+  useLatestPlanPayload
+} from "./threadViewStore";
+import { applyTranscriptNotification, terminalKindForTurn } from "./threadNotifications";
+import {
+  activeQueueTurns,
+  queueSummariesByThread,
+  queueThreadSummary,
+  type QueuedPrompt,
+  type QueueSnapshot
+} from "./queueModel";
+import { RuntimePanel } from "./RuntimePanel";
+import { deleteServerFile, uploadPreviewUrl, uploadServerFile } from "./uploads";
 
 type JsonRpcId = string | number;
-
-type ThreadItem = {
-  id: string;
-  type: string;
-  text?: string;
-  explanation?: string;
-  planEntries?: Array<{ step: string; status: string }>;
-  phase?: string | null;
-  command?: string;
-  cwd?: string;
-  aggregatedOutput?: string | null;
-  exitCode?: number | null;
-  content?: unknown[];
-  summary?: string[];
-  changes?: unknown[];
-  output?: string;
-  status?: string | object;
-  [key: string]: unknown;
-};
-
-type Turn = {
-  id: string;
-  items: ThreadItem[];
-  status: unknown;
-  startedAt?: number | null;
-  completedAt?: number | null;
-};
-
-type TurnGroup = {
-  id: string;
-  itemIds: string[];
-  status?: unknown;
-  startedAt?: number | null;
-  completedAt?: number | null;
-  updatedAt?: number | null;
-  pending?: boolean;
-};
-
-type DisplayTurn = TurnGroup & {
-  items: ThreadItem[];
-};
-
-type Thread = {
-  id: string;
-  preview: string;
-  cwd: string;
-  updatedAt: number;
-  status: { type: string; activeFlags?: unknown[] };
-  name: string | null;
-  turns: Turn[];
-};
 
 type ThreadGroup = {
   cwd: string;
@@ -133,9 +198,13 @@ type ThreadGroup = {
   threads: Thread[];
 };
 
-type MobilePanel = "project" | "sessions" | null;
+type MobilePanel = "sessions" | null;
 type ThreadLayout = "directories" | "recent";
+type ProviderFilter = "all" | ProviderId;
+type WorkspaceView = "chat" | "files" | "diff" | "runtime";
+type NoticeTone = "info" | "success" | "warning" | "error";
 type CommandPanel =
+  | "provider"
   | "collab"
   | "model"
   | "permissions"
@@ -150,17 +219,18 @@ type CommandPanel =
   | "diff"
   | null;
 
-type QueuedPrompt = {
-  id: string;
-  threadId: string;
-  text: string;
-  createdAt: number;
-};
-
 type CompletionPopup = {
   id: string;
   title: string;
   detail: string;
+};
+
+type GatewayDiagnostic = {
+  code: string;
+  title: string;
+  detail: string;
+  retrying: boolean;
+  occurredAt: number;
 };
 
 type ServerRequest = {
@@ -206,28 +276,6 @@ type ProjectSuggestion = {
   path: string;
 };
 
-type ProjectDiffFile = {
-  path: string;
-  status: string;
-  additions: number;
-  deletions: number;
-  binary?: boolean;
-  tooLarge?: boolean;
-};
-
-type ProjectDiff = {
-  root: string;
-  branch: string | null;
-  status: string;
-  diff: string;
-  files: ProjectDiffFile[];
-  additions: number;
-  deletions: number;
-  hasChanges: boolean;
-  baseTree?: string | null;
-  currentTree?: string | null;
-};
-
 type DiffSnapshot = {
   root: string;
   tree: string;
@@ -255,6 +303,7 @@ type Attachment = {
   name: string;
   type: string;
   size: number;
+  image: boolean;
   url: string;
 };
 
@@ -268,34 +317,144 @@ type Bootstrap = {
   authenticated: boolean;
   authEnabled: boolean;
   codexVersion: string;
+  uploads?: { maxBytes: number; maxFiles: number };
+  providers?: Partial<Record<ProviderId, ProviderStatus>>;
   defaultCwd?: string;
   codex?: {
     initializeInfo?: unknown;
     collaborationModes?: any[];
     pendingServerRequests?: ServerRequest[];
+    diagnostic?: GatewayDiagnostic | null;
   };
   codexError?: string | null;
 };
 
+type ProviderCapability =
+  | "chat"
+  | "queue"
+  | "stop"
+  | "models"
+  | "modes"
+  | "rename"
+  | "archive"
+  | "diff"
+  | "approvals"
+  | "steer"
+  | "fork"
+  | "compact"
+  | "plugins"
+  | "skills"
+  | "mcp"
+  | "memory"
+  | "serviceTier"
+  | "reasoning"
+  | "images";
+
+type ProviderStatus = {
+  id?: ProviderId;
+  label?: string;
+  version?: string | null;
+  available?: boolean;
+  availability?: "available" | "unavailable" | "unknown";
+  authenticated?: boolean;
+  authStatus?: "authenticated" | "missing" | "unknown" | string;
+  status?: string | null;
+  diagnostic?: string | null;
+  capabilities?: Partial<Record<ProviderCapability, boolean>>;
+  rateLimit?: unknown;
+};
+
+const providerOrder: ProviderId[] = ["codex", "cursor", "claude"];
+const providerLabels = AGENT_PROVIDER_LABELS;
+const cursorExecutionModeLabel = "Allowlist · no sandbox";
+const cursorExecutionModeDescription = "Runs as the server user and may access paths outside the selected workspace.";
+const providerCapabilityDefaults: Record<ProviderId, Record<ProviderCapability, boolean>> = {
+  codex: {
+    chat: true,
+    queue: true,
+    stop: true,
+    models: true,
+    modes: true,
+    rename: true,
+    archive: true,
+    diff: true,
+    approvals: true,
+    steer: true,
+    fork: true,
+    compact: true,
+    plugins: true,
+    skills: true,
+    mcp: true,
+    memory: true,
+    serviceTier: true,
+    reasoning: true,
+    images: true
+  },
+  cursor: {
+    chat: true,
+    queue: true,
+    stop: true,
+    models: true,
+    modes: true,
+    rename: true,
+    archive: true,
+    diff: true,
+    approvals: false,
+    steer: false,
+    fork: false,
+    compact: false,
+    plugins: false,
+    skills: false,
+    mcp: false,
+    memory: false,
+    serviceTier: false,
+    reasoning: false,
+    images: true
+  },
+  claude: {
+    chat: true,
+    queue: true,
+    stop: true,
+    models: true,
+    modes: true,
+    rename: true,
+    archive: true,
+    diff: true,
+    approvals: false,
+    steer: false,
+    fork: false,
+    compact: false,
+    plugins: false,
+    skills: false,
+    mcp: false,
+    memory: false,
+    serviceTier: false,
+    reasoning: true,
+    images: true
+  }
+};
+
 const defaultCwd = "";
-const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
-const promptQueueStorageKey = "codex-remote-console.promptQueue.v1";
-const threadLayoutStorageKey = "codex-remote-console.threadLayout";
-const sidebarWidthStorageKey = "codex-remote-console.sidebarWidth";
+const storageNamespace = "coding-agent-console";
+const storageKey = (name: string) => `${storageNamespace}.${name}`;
+const promptQueueStorageKey = storageKey("promptQueue.v1");
+const threadLayoutStorageKey = storageKey("threadLayout");
+const sidebarWidthStorageKey = storageKey("sidebarWidth");
+const pinnedThreadsStorageKey = storageKey("pinnedThreads.v1");
+const contextWidthStorageKey = storageKey("contextWidth.v1");
 const defaultSidebarWidth = 320;
 const minSidebarWidth = 240;
 const maxSidebarWidth = 520;
-
-const EMPTY_ITEMS: Record<string, ThreadItem> = Object.freeze({}) as Record<string, ThreadItem>;
-const EMPTY_TURNS: Record<string, TurnGroup> = Object.freeze({}) as Record<string, TurnGroup>;
-const EMPTY_ORDER: string[] = Object.freeze([]) as unknown as string[];
-
-function appPath(path: string) {
-  return `${basePath}${path}`;
-}
+const defaultContextWidth = 640;
+const minContextWidth = 300;
+const maxContextWidth = 1400;
+const reservedWorkbenchWidth = 600;
+const ProjectFileWorkspace = dynamic(() => import("./ProjectFileWorkspace"), {
+  loading: () => <div className="workspaceLoading">Loading project reader…</div>
+});
 
 function fetchBootstrap(): Promise<Bootstrap> {
-  return fetch(`${basePath}/api/bootstrap`).then(async (response) => {
+  return fetch(appPath("/api/bootstrap")).then(async (response) => {
     const text = await response.text();
     let data: unknown;
     try {
@@ -303,7 +462,7 @@ function fetchBootstrap(): Promise<Bootstrap> {
     } catch {
       throw new Error(
         !response.ok
-          ? `Bootstrap failed (${response.status}). If this app is behind a URL prefix (for example /codex_web/), set NEXT_PUBLIC_BASE_PATH to that exact prefix when building and when starting the server, then run a fresh build.`
+          ? `Bootstrap failed (${response.status}). If this app is behind a URL prefix (for example /codex_web_cursor/), set NEXT_PUBLIC_BASE_PATH to that exact prefix when building and when starting the server, then run a fresh build.`
           : "Bootstrap response was not valid JSON."
       );
     }
@@ -321,89 +480,150 @@ function fetchBootstrap(): Promise<Bootstrap> {
 const bootstrapPromise: Promise<Bootstrap> | null =
   typeof window === "undefined" ? null : fetchBootstrap();
 
-async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(appPath(path));
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(typeof body.error === "string" ? body.error : `Request failed: ${response.status}`);
+const skippedTreeDirs = new Set([".git", ".next", "__pycache__", "build", "dist", "node_modules", ".venv", "vendor"]);
+
+async function searchProjectFiles(root: string, query: string, limit = 20): Promise<FileMentionHit[]> {
+  const needle = query.trim().toLowerCase();
+  const hits: FileMentionHit[] = [];
+  const queue: string[] = [""];
+  const visited = new Set<string>();
+  let scanned = 0;
+  while (queue.length && hits.length < limit && scanned < 36) {
+    const batch = queue.splice(0, 4).filter((dir) => {
+      if (visited.has(dir)) return false;
+      visited.add(dir);
+      return true;
+    });
+    if (!batch.length) continue;
+    scanned += batch.length;
+    const listings = await Promise.all(batch.map((dir) => getJson<ProjectTreeListing>(`/api/projects/tree?${new URLSearchParams({ cwd: root, path: dir })}`)));
+    for (const listing of listings) {
+    const files = [];
+    for (const entry of listing.entries) {
+      if (!entry.accessible) continue;
+      if (entry.kind === "directory") {
+        if (!skippedTreeDirs.has(entry.name) && !entry.name.startsWith(".")) queue.push(entry.path);
+        continue;
+      }
+      files.push(entry);
+    }
+    const ranked = needle
+      ? files.filter((entry) => entry.path.toLowerCase().includes(needle) || entry.name.toLowerCase().includes(needle))
+      : files;
+    for (const entry of ranked) {
+      if (!isMentionablePath(entry.path)) continue;
+      hits.push({ path: entry.path, name: entry.name });
+      if (hits.length >= limit) break;
+    }
+    if (hits.length >= limit) break;
+    }
   }
-  return body as T;
+  return hits;
 }
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(appPath(path), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body)
-  });
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(typeof result.error === "string" ? result.error : `Request failed: ${response.status}`);
+function sameIds(current: string[], next: string[]) {
+  return current.length === next.length && current.every((id, index) => id === next[index]);
+}
+
+/**
+ * Rebuild a record while keeping the previous object for entries whose content
+ * is unchanged, so memoized rows survive a full history refresh.
+ */
+function reuseUnchanged<T>(current: Record<string, T>, incoming: Record<string, T>) {
+  const keys = Object.keys(incoming);
+  let changed = keys.length !== Object.keys(current).length;
+  const next: Record<string, T> = {};
+
+  for (const key of keys) {
+    const previous = current[key];
+    if (previous !== undefined && JSON.stringify(previous) === JSON.stringify(incoming[key])) {
+      next[key] = previous;
+    } else {
+      next[key] = incoming[key];
+      changed = true;
+    }
   }
-  return result as T;
-}
 
-function uniqueAppend<T>(items: T[], item: T) {
-  return items.includes(item) ? items : [...items, item];
-}
-
-function uniqueItems<T>(items: T[]) {
-  return items.filter((item, index) => items.indexOf(item) === index);
+  return changed ? next : current;
 }
 
 function clampSidebarWidth(width: number) {
   return Math.min(maxSidebarWidth, Math.max(minSidebarWidth, Math.round(width)));
 }
 
-function formatTime(timestamp: number) {
-  if (!timestamp) return "";
-  return new Date(timestamp * 1000).toLocaleString();
+function clampContextWidth(width: number) {
+  const viewport = typeof window === "undefined" ? 1600 : window.innerWidth;
+  const max = Math.min(maxContextWidth, Math.max(minContextWidth, viewport - reservedWorkbenchWidth));
+  return Math.min(max, Math.max(minContextWidth, Math.round(width)));
 }
 
-function nowSeconds() {
-  return Math.floor(Date.now() / 1000);
+function connectionLabel(state: string) {
+  if (state === "online") return "Online";
+  if (state === "offline") return "Offline";
+  if (state === "error") return "Error";
+  return state;
 }
 
-function statusLabel(status: unknown) {
-  if (typeof status === "string") return status;
-  if (!status || typeof status !== "object" || !("type" in status)) return "unknown";
-  return String(status.type);
+function readStoredJson<T>(raw: string | null, fallback: T): T {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
 }
 
-function threadIsActive(thread: Thread, activeTurns: Record<string, string> = {}) {
-  return statusLabel(thread.status) === "active" || Boolean(activeTurns[thread.id]);
-}
-
-type ThreadStatusKind = "running" | "waiting" | "failed" | "idle";
-
-function threadStatusKind(
-  thread: Thread,
-  activeTurns: Record<string, string> = {},
-  waitingThreadIds: Set<string> = new Set()
-): ThreadStatusKind {
-  if (waitingThreadIds.has(thread.id)) return "waiting";
-  if (threadIsActive(thread, activeTurns)) return "running";
-  const label = statusLabel(thread.status);
-  if (label === "failed" || label === "error") return "failed";
-  return "idle";
+function inferredNoticeTone(message: string): NoticeTone {
+  if (!message) return "info";
+  if (/failed|\berror\b|exception|timed? out|timeout|refused|disconnected/i.test(message)) return "error";
+  if (/stop .* before|unavailable|does not support|cannot|unknown|no active|no idle|not mapped|not selected|not reported/i.test(message)) return "warning";
+  if (/created|selected|updated|copied|renamed|archived|restored|started|enabled|disabled|refreshed|closed/i.test(message)) return "success";
+  return "info";
 }
 
 function waitingThreadIdsFromRequests(requests: ServerRequest[]) {
   const ids = new Set<string>();
   for (const request of requests) {
     const tid = (request.params as { threadId?: string } | undefined)?.threadId;
-    if (typeof tid === "string" && tid) ids.add(tid);
+    const provider = (request.params as { provider?: ProviderId } | undefined)?.provider || "codex";
+    if (typeof tid === "string" && tid) ids.add(threadKey(tid, provider));
   }
   return ids;
 }
 
-function activeTurnIdFromTurns(turns: Turn[] = []) {
-  return [...turns].reverse().find((turn) => turn.status === "inProgress")?.id || null;
+function providerName(provider: ProviderId) {
+  return providerLabels[provider];
 }
 
-function threadTitle(thread: Thread | null) {
-  if (!thread) return "No session selected";
-  return thread.name || thread.preview || "New session";
+function providerStatus(bootstrap: Bootstrap | null, provider: ProviderId): ProviderStatus {
+  const fromBootstrap = bootstrap?.providers?.[provider] || {};
+  const availability = fromBootstrap.availability
+    || (fromBootstrap.available === true ? "available" : fromBootstrap.available === false ? "unavailable" : undefined)
+    || (provider === "codex" ? "available" : "unavailable");
+  const authStatus = fromBootstrap.authStatus
+    || (fromBootstrap.authenticated === true ? "authenticated" : fromBootstrap.authenticated === false ? "missing" : undefined)
+    || (provider === "codex" ? "authenticated" : "unknown");
+  return {
+    id: provider,
+    label: providerName(provider),
+    version: provider === "codex" ? bootstrap?.codexVersion : null,
+    ...fromBootstrap,
+    availability,
+    authStatus,
+    status: fromBootstrap.status || fromBootstrap.diagnostic || (provider === "codex" ? bootstrap?.codexError || null : null),
+    capabilities: {
+      ...providerCapabilityDefaults[provider],
+      ...(fromBootstrap.capabilities || {})
+    }
+  };
+}
+
+function providerAvailable(status: ProviderStatus) {
+  return status.availability === "available";
+}
+
+function providerCapability(status: ProviderStatus, capability: ProviderCapability) {
+  return status.capabilities?.[capability] !== false;
 }
 
 function normalizeDirectoryPath(path: string) {
@@ -417,15 +637,44 @@ function directoryLabel(path: string) {
   return cleanPath.split("/").filter(Boolean).at(-1) || path || "Unknown directory";
 }
 
-function mergeThreadsById(current: Thread[], incoming: Thread[]) {
-  const seen = new Set<string>();
-  const merged: Thread[] = [];
-  for (const thread of [...incoming, ...current]) {
-    if (seen.has(thread.id)) continue;
-    seen.add(thread.id);
-    merged.push(thread);
+function isUntitledThread(thread: Thread) {
+  if (!thread.name?.trim()) return true;
+  return providerOf(thread) === "cursor" && Boolean(thread.cwd) && thread.name === directoryLabel(thread.cwd);
+}
+
+function isUnusedCursorThread(thread: Thread) {
+  return providerOf(thread) === "cursor" && (thread.empty || (isUntitledThread(thread) && !(thread.turns || []).length));
+}
+
+function cursorThreadMode(thread: Thread): ModeKind {
+  if (thread.mode === "plan" || thread.runtime?.mode === "plan") return "plan";
+  if (thread.mode === "ask" || thread.runtime?.mode === "ask") return "ask";
+  return "default";
+}
+
+function fallbackTitleFromUserText(text: string) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  const segment = normalized.split(/[.?!\n。？！]/)[0] || normalized;
+  return segment.slice(0, 28).trim();
+}
+
+function withImmediateTitle(thread: Thread, text: string) {
+  if (!isUntitledThread(thread)) return thread;
+  const title = fallbackTitleFromUserText(text);
+  if (!title) return thread;
+  return { ...thread, name: title, preview: thread.preview || text };
+}
+
+function directoryErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/ENOENT|no such file or directory/i.test(message)) {
+    return "That directory does not exist. Check the path and try again.";
   }
-  return merged.sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0));
+  if (/EACCES|permission denied/i.test(message)) {
+    return "The server does not have permission to open that directory.";
+  }
+  return message;
 }
 
 function buildThreadGroups(threads: Thread[], pinnedDirs: string[] = []) {
@@ -459,11 +708,11 @@ function buildThreadGroups(threads: Thread[], pinnedDirs: string[] = []) {
 function compactText(text: string, limit = 120) {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (normalized.length <= limit) return normalized;
-  return `${normalized.slice(0, limit - 3)}...`;
+  return `${normalized.slice(0, limit - 1)}…`;
 }
 
 function itemText(item: ThreadItem) {
-  if (item.type === "userMessage") {
+  if (isUserMessageItem(item)) {
     return userMessageParts(item).text;
   }
 
@@ -473,6 +722,7 @@ function itemText(item: ThreadItem) {
     return [...(item.summary || []), ...content].join("\n");
   }
   if (item.type === "commandExecution") return outputText(item);
+  if (item.type === "toolCall") return String(item.output || item.summary || "");
   if (item.type === "fileChange") return item.output || JSON.stringify(item.changes || [], null, 2);
   if (item.type === "diff") return item.text || "";
   return JSON.stringify(item, null, 2);
@@ -494,6 +744,13 @@ function itemVersion(item: ThreadItem) {
   return `${item.id}:${item.type}`;
 }
 
+/** Newest agent/plan replies first, then tool/command cards (also newest-first). */
+function orderTurnResponseItems(items: ThreadItem[]) {
+  const replies = items.filter((item) => item.type === "agentMessage" || item.type === "plan").reverse();
+  const tools = items.filter((item) => item.type !== "agentMessage" && item.type !== "plan").reverse();
+  return [...replies, ...tools];
+}
+
 function isTextEditingTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;
@@ -502,10 +759,14 @@ function isTextEditingTarget(target: EventTarget | null) {
   return !["button", "checkbox", "radio", "submit", "reset"].includes(target.type);
 }
 
-function inputItems(text: string, attachments: Attachment[] = []) {
+function inputItems(text: string, attachments: Attachment[] = [], nativeImages = true) {
   return [
     ...(text ? [{ type: "text", text, text_elements: [] }] : []),
-    ...attachments.map((attachment) => ({ type: "image", url: attachment.url }))
+    ...attachments.map((attachment) => ({
+      type: "uploadedFile",
+      uploadId: attachment.id,
+      asImage: nativeImages && attachment.image
+    }))
   ];
 }
 
@@ -529,267 +790,8 @@ function requestInputParams(request: ServerRequest) {
   };
 }
 
-function formatBytes(size: number) {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function readImageAttachment(file: File) {
-  return new Promise<Attachment>((resolve, reject) => {
-    if (!file.type.startsWith("image/")) {
-      reject(new Error(`${file.name} is not an image file.`));
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = () =>
-      resolve({
-        id: `${file.name}-${file.size}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        name: file.name || "pasted-image",
-        type: file.type,
-        size: file.size,
-        url: String(reader.result || "")
-      });
-    reader.onerror = () => reject(new Error(`Could not read ${file.name || "image"}.`));
-    reader.readAsDataURL(file);
-  });
-}
-
-function userMessageParts(item: ThreadItem) {
-  const content = Array.isArray(item.content) ? item.content : [];
-  return {
-    text: content
-      .map((part) =>
-        part && typeof part === "object" && "text" in part
-          ? String(part.text || "")
-          : part && typeof part === "object" && "path" in part
-            ? String(part.path || "")
-            : ""
-      )
-      .filter(Boolean)
-      .join("\n"),
-    images: content
-      .map((part) => (part && typeof part === "object" && "url" in part ? String(part.url || "") : ""))
-      .filter(Boolean)
-  };
-}
-
 function outputText(item: ThreadItem) {
   return item.aggregatedOutput || item.output || "";
-}
-
-function plainTextWithBreaks(text: string, keyPrefix: string) {
-  return text.split("\n").flatMap((part, index) =>
-    index === 0 ? [part] : [<br key={`${keyPrefix}-br-${index}`} />, part]
-  );
-}
-
-function safeMarkdownHref(href: string) {
-  const trimmed = href.trim();
-  if (/^(https?:|mailto:|\/|#)/i.test(trimmed)) return trimmed;
-  return "#";
-}
-
-function renderInlineMarkdown(text: string, keyPrefix: string) {
-  const nodes = [];
-  const pattern = /(`([^`]+)`|\*\*([^*]+)\*\*|\[([^\]]+)\]\(([^)\s]+)\))/g;
-  let cursor = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = pattern.exec(text))) {
-    if (match.index > cursor) {
-      nodes.push(...plainTextWithBreaks(text.slice(cursor, match.index), `${keyPrefix}-text-${cursor}`));
-    }
-
-    const key = `${keyPrefix}-${match.index}`;
-    if (match[2] !== undefined) {
-      nodes.push(<code key={key}>{match[2]}</code>);
-    } else if (match[3] !== undefined) {
-      nodes.push(<strong key={key}>{renderInlineMarkdown(match[3], `${key}-strong`)}</strong>);
-    } else {
-      const href = safeMarkdownHref(match[5] || "");
-      const external = /^https?:/i.test(href);
-      nodes.push(
-        <a href={href} key={key} rel={external ? "noreferrer" : undefined} target={external ? "_blank" : undefined}>
-          {renderInlineMarkdown(match[4] || href, `${key}-link`)}
-        </a>
-      );
-    }
-    cursor = pattern.lastIndex;
-  }
-
-  if (cursor < text.length) {
-    nodes.push(...plainTextWithBreaks(text.slice(cursor), `${keyPrefix}-text-${cursor}`));
-  }
-
-  return nodes;
-}
-
-function parseTableRow(line: string) {
-  return line
-    .replace(/^\s*\|?|\|?\s*$/g, "")
-    .split("|")
-    .map((cell) => cell.trim());
-}
-
-function isTableSeparator(line: string) {
-  const cells = parseTableRow(line);
-  return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
-}
-
-function markdownFenceLanguage(line: string) {
-  return line.replace(/^```+/, "").trim().split(/\s+/)[0] || "";
-}
-
-function MarkdownBody({ text, expanded, streaming }: { text: string; expanded?: boolean; streaming?: boolean }) {
-  const lines = text.replace(/\r\n?/g, "\n").split("\n");
-  const blocks = [];
-  let index = 0;
-
-  while (index < lines.length) {
-    const line = lines[index];
-
-    if (!line.trim()) {
-      index++;
-      continue;
-    }
-
-    if (line.trimStart().startsWith("```")) {
-      const language = markdownFenceLanguage(line.trimStart());
-      const code = [];
-      index++;
-      while (index < lines.length && !lines[index].trimStart().startsWith("```")) {
-        code.push(lines[index]);
-        index++;
-      }
-      if (index < lines.length) index++;
-      blocks.push(
-        <figure className="markdownCodeBlock" key={`code-${index}`}>
-          {language ? <figcaption>{language}</figcaption> : null}
-          <pre>
-            <code>{code.join("\n")}</code>
-          </pre>
-        </figure>
-      );
-      continue;
-    }
-
-    const heading = /^(#{1,6})\s+(.+)$/.exec(line);
-    if (heading) {
-      const level = heading[1].length;
-      const content = renderInlineMarkdown(heading[2].trim(), `heading-${index}`);
-      const key = `heading-${index}`;
-      blocks.push(
-        level === 1 ? (
-          <h1 key={key}>{content}</h1>
-        ) : level === 2 ? (
-          <h2 key={key}>{content}</h2>
-        ) : level === 3 ? (
-          <h3 key={key}>{content}</h3>
-        ) : level === 4 ? (
-          <h4 key={key}>{content}</h4>
-        ) : level === 5 ? (
-          <h5 key={key}>{content}</h5>
-        ) : (
-          <h6 key={key}>{content}</h6>
-        )
-      );
-      index++;
-      continue;
-    }
-
-    if (line.includes("|") && index + 1 < lines.length && isTableSeparator(lines[index + 1])) {
-      const headers = parseTableRow(line);
-      const rows = [];
-      index += 2;
-      while (index < lines.length && lines[index].includes("|") && lines[index].trim()) {
-        rows.push(parseTableRow(lines[index]));
-        index++;
-      }
-      blocks.push(
-        <div className="markdownTableWrap" key={`table-${index}`}>
-          <table>
-            <thead>
-              <tr>
-                {headers.map((header, cellIndex) => (
-                  <th key={`${header}-${cellIndex}`}>{renderInlineMarkdown(header, `th-${index}-${cellIndex}`)}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, rowIndex) => (
-                <tr key={`row-${index}-${rowIndex}`}>
-                  {headers.map((_, cellIndex) => (
-                    <td key={`cell-${rowIndex}-${cellIndex}`}>
-                      {renderInlineMarkdown(row[cellIndex] || "", `td-${index}-${rowIndex}-${cellIndex}`)}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      );
-      continue;
-    }
-
-    const unordered = /^\s*[-*]\s+(.+)$/.exec(line);
-    const ordered = /^\s*\d+[.)]\s+(.+)$/.exec(line);
-    if (unordered || ordered) {
-      const orderedList = Boolean(ordered);
-      const items = [];
-      while (index < lines.length) {
-        const match = orderedList ? /^\s*\d+[.)]\s+(.+)$/.exec(lines[index]) : /^\s*[-*]\s+(.+)$/.exec(lines[index]);
-        if (!match) break;
-        items.push(match[1]);
-        index++;
-      }
-      const ListTag = orderedList ? "ol" : "ul";
-      blocks.push(
-        <ListTag key={`list-${index}`}>
-          {items.map((item, itemIndex) => (
-            <li key={`${itemIndex}-${item}`}>{renderInlineMarkdown(item, `li-${index}-${itemIndex}`)}</li>
-          ))}
-        </ListTag>
-      );
-      continue;
-    }
-
-    if (/^\s*>\s?/.test(line)) {
-      const quote = [];
-      while (index < lines.length && /^\s*>\s?/.test(lines[index])) {
-        quote.push(lines[index].replace(/^\s*>\s?/, ""));
-        index++;
-      }
-      blocks.push(<blockquote key={`quote-${index}`}>{renderInlineMarkdown(quote.join("\n"), `quote-${index}`)}</blockquote>);
-      continue;
-    }
-
-    const paragraph = [line];
-    index++;
-    while (
-      index < lines.length &&
-      lines[index].trim() &&
-      !lines[index].trimStart().startsWith("```") &&
-      !/^(#{1,6})\s+/.test(lines[index]) &&
-      !/^\s*[-*]\s+/.test(lines[index]) &&
-      !/^\s*\d+[.)]\s+/.test(lines[index]) &&
-      !/^\s*>\s?/.test(lines[index]) &&
-      !(lines[index].includes("|") && index + 1 < lines.length && isTableSeparator(lines[index + 1]))
-    ) {
-      paragraph.push(lines[index]);
-      index++;
-    }
-    blocks.push(<p key={`p-${index}`}>{renderInlineMarkdown(paragraph.join("\n"), `p-${index}`)}</p>);
-  }
-
-  return (
-    <div className={`markdownBody ${expanded ? "expandedMarkdown" : ""}`}>
-      {blocks.length ? blocks : <p>{streaming ? "Waiting for output" : "..."}</p>}
-      {streaming ? <span className="streamCursor" /> : null}
-    </div>
-  );
 }
 
 function changedFiles(item: ThreadItem) {
@@ -989,6 +991,95 @@ function formatTokenUsage(value: unknown) {
   return parts.join(" · ");
 }
 
+function sameStatusType(left: unknown, right: unknown) {
+  return statusLabel(left) === statusLabel(right);
+}
+
+function SessionModelPill({ model, onClick }: { model: string; onClick: () => void }) {
+  const label = model.trim() || "auto";
+  return (
+    <button
+      aria-label={`Model ${label}`}
+      className="sessionModelPill"
+      title={label}
+      type="button"
+      onClick={onClick}
+    >
+      <span>{label}</span>
+      <ChevronDown aria-hidden="true" size={14} />
+    </button>
+  );
+}
+
+function UsagePill({
+  label,
+  rateLimit,
+  windowTitle
+}: {
+  label: string;
+  rateLimit: { usedPercent: number; resetsAt: number } | null;
+  windowTitle: string;
+}) {
+  if (!rateLimit) return null;
+  const remainingPercent = remainingCodexPercent(rateLimit.usedPercent);
+  const percent = formatCodexPercent(remainingPercent);
+  const resetShort = formatCodexResetShort(rateLimit.resetsAt);
+  const resetFull = formatCodexResetFull(rateLimit.resetsAt);
+
+  return (
+    <div
+      className="codexUsagePill"
+      role="status"
+      aria-live="polite"
+      title={`${windowTitle} · ${percent}% remaining · resets ${resetFull}`}
+    >
+      <BarChart3 aria-hidden="true" size={15} />
+      <span className="codexUsageCopy">
+        <strong><span className="codexUsageProvider">{label}</span> {percent}%</strong>
+        <small className="codexUsageRemaining">remaining</small>
+        <small className="codexUsageReset">Reset {resetShort}</small>
+      </span>
+      <span className="codexUsageMeter" aria-hidden="true">
+        <span style={{ width: `${remainingPercent}%` }} />
+      </span>
+    </div>
+  );
+}
+
+function ClaudeUsagePill({ rateLimit }: { rateLimit: StandardClaudeRateLimit | null }) {
+  if (!rateLimit) return null;
+  const weekly = rateLimit.weekly;
+  const title = [
+    formatClaudeUsageLabel(rateLimit),
+    `5h ${formatClaudeResetRelative(rateLimit.session.resetsAt)}`,
+    weekly ? `Week ${formatClaudeWeekReset(weekly.resetsAt)}` : ""
+  ].filter(Boolean).join(" · ");
+
+  return (
+    <div className="claudeUsagePill" role="status" aria-live="polite" title={title}>
+      <span className="splitUsageCopy">
+        <strong>5h {formatCodexPercent(rateLimit.session.usedPercent)}%</strong>
+        <small className="codexUsageReset">{formatClaudeResetRelative(rateLimit.session.resetsAt)}</small>
+        <strong>Week {formatCodexPercent(weekly?.usedPercent ?? 0)}%</strong>
+        {weekly ? <small className="codexUsageReset">{formatClaudeWeekReset(weekly.resetsAt)}</small> : null}
+      </span>
+    </div>
+  );
+}
+
+function CursorUsagePill({ usage }: { usage: CursorUsageSnapshot | null }) {
+  if (!usage) return null;
+  return (
+    <div className="cursorUsagePill" role="status" aria-live="polite" title={formatCursorUsageTitle(usage)}>
+      <span className="splitUsageCopy">
+        <strong>Models {formatCursorUsedPercent(usage.cursorModels.usedPercent)}%</strong>
+        <strong>API {formatCursorUsedPercent(usage.otherModels.usedPercent)}%</strong>
+        <small className="codexUsageReset">Reset {formatCodexResetShort(usage.resetsAt)}</small>
+      </span>
+    </div>
+  );
+}
+
 function shortJson(value: unknown, limit = 180) {
   const text =
     typeof value === "string"
@@ -1016,11 +1107,17 @@ function modelId(model: any) {
 }
 
 function modelTitle(model: any) {
-  return String(model?.displayName || model?.name || modelId(model) || "Unknown model");
+  const id = modelId(model);
+  const displayName = typeof model?.displayName === "string" ? model.displayName.trim() : "";
+  if (displayName) return displayName;
+  return id || String(model?.name || "Unknown model");
 }
 
 function modelDescription(model: any) {
-  return String(model?.description || model?.id || model?.model || "");
+  const id = modelId(model);
+  const description = typeof model?.description === "string" ? model.description.trim() : "";
+  if (description && description !== id) return description;
+  return "";
 }
 
 function modelReasoningOptions(model: any): ReasoningEffort[] {
@@ -1044,6 +1141,7 @@ function selectedRoot(thread: Thread | null, project: ProjectInfo | null, cwd: s
 
 function panelTitle(panel: Exclude<CommandPanel, null>) {
   const titles: Record<Exclude<CommandPanel, null>, string> = {
+    provider: "Provider",
     collab: "Collaboration Mode",
     model: "Model",
     permissions: "Permissions",
@@ -1213,38 +1311,65 @@ export default function Home() {
   const [projectError, setProjectError] = useState("");
   const [threads, setThreads] = useState<Thread[]>([]);
   const [selectedThread, setSelectedThread] = useState<Thread | null>(null);
-  const [itemsByThread, setItemsByThread] = useState<Record<string, Record<string, ThreadItem>>>({});
-  const [itemOrderByThread, setItemOrderByThread] = useState<Record<string, string[]>>({});
-  const [turnsByThread, setTurnsByThread] = useState<Record<string, Record<string, TurnGroup>>>({});
-  const [turnOrderByThread, setTurnOrderByThread] = useState<Record<string, string[]>>({});
-  const [pendingPromptByThread, setPendingPromptByThread] = useState<Record<string, string>>({});
-  const [promptByThread, setPromptByThread] = useState<Record<string, string>>({});
-  const [runtimeSettings, setRuntimeSettings] = useState<SessionRuntimeSettings>(defaultRuntimeSettings);
+  const [selectedProvider, setSelectedProvider] = useState<ProviderId>("codex");
+  const [runtimeSettingsByProvider, setRuntimeSettingsByProvider] = useState<Record<ProviderId, SessionRuntimeSettings>>({
+    codex: providerRuntimeDefaults("codex"),
+    cursor: providerRuntimeDefaults("cursor"),
+    claude: providerRuntimeDefaults("claude")
+  });
+  const [modeOverrideByThread, setModeOverrideByThread] = useState<Record<string, ModeKind>>({});
   const [pendingRequests, setPendingRequests] = useState<ServerRequest[]>([]);
   const [activeTurnIdsByThread, setActiveTurnIdsByThread] = useState<Record<string, string>>({});
-  const [queuedPromptsByThread, setQueuedPromptsByThread] = useState<Record<string, QueuedPrompt[]>>({});
+  const [pendingLiveThreadKeys, setPendingLiveThreadKeys] = useState<string[]>([]);
+  const [queueSnapshot, setQueueSnapshot] = useState<QueueSnapshot>({ items: [], threads: [] });
+  const [queueAction, setQueueAction] = useState<string | null>(null);
+  const [composerSubmitting, setComposerSubmitting] = useState(false);
+  const [planSubmitting, setPlanSubmitting] = useState(false);
+  const [sessionCreating, setSessionCreating] = useState(false);
   const [tokenUsageByThread, setTokenUsageByThread] = useState<Record<string, unknown>>({});
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [notice, setNotice] = useState("");
+  const [codexRateLimit, setCodexRateLimit] = useState<StandardCodexRateLimit | null>(null);
+  const [claudeRateLimit, setClaudeRateLimit] = useState<StandardClaudeRateLimit | null>(null);
+  const [cursorUsage, setCursorUsage] = useState<CursorUsageSnapshot | null>(null);
+  const [attachmentsByThread, setAttachmentsByThread] = useState<Record<string, Attachment[]>>({});
+  const [uploadsInProgress, setUploadsInProgress] = useState(0);
+  const [notice, setNoticeMessage] = useState("");
+  const [noticeTone, setNoticeTone] = useState<NoticeTone>("info");
+  const [gatewayDiagnostic, setGatewayDiagnostic] = useState<GatewayDiagnostic | null>(null);
+  const [historyLoadingThreadId, setHistoryLoadingThreadId] = useState<string | null>(null);
+  const [showAllHistory, setShowAllHistory] = useState(false);
   const [completionPopup, setCompletionPopup] = useState<CompletionPopup | null>(null);
   const [recentDirs, setRecentDirs] = useState<string[]>([]);
   const [pinnedDirs, setPinnedDirs] = useState<string[]>([]);
+  const [pinnedThreadKeys, setPinnedThreadKeys] = useState<string[]>([]);
   const [collapsedThreadGroups, setCollapsedThreadGroups] = useState<string[]>([]);
   const [threadLayout, setThreadLayout] = useState<ThreadLayout>("directories");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(defaultSidebarWidth);
   const [sidebarResizing, setSidebarResizing] = useState(false);
+  const [contextWidth, setContextWidth] = useState(defaultContextWidth);
+  const [contextResizing, setContextResizing] = useState(false);
   const [sessionManagerOpen, setSessionManagerOpen] = useState(false);
   const [sessionManagerThreads, setSessionManagerThreads] = useState<Thread[]>([]);
   const [sessionManagerCursor, setSessionManagerCursor] = useState<string | null>(null);
   const [sessionManagerSearch, setSessionManagerSearch] = useState("");
   const [sessionManagerArchived, setSessionManagerArchived] = useState(false);
+  const [sessionManagerProviderFilter, setSessionManagerProviderFilter] = useState<ProviderFilter>("all");
   const [sessionManagerLoading, setSessionManagerLoading] = useState(false);
   const [sessionManagerError, setSessionManagerError] = useState("");
   const [sessionManagerBusy, setSessionManagerBusy] = useState<string | null>(null);
   const [collapsedSessionManagerGroups, setCollapsedSessionManagerGroups] = useState<string[]>([]);
   const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false);
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>(null);
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("chat");
+  const [workspaceFileRequest, setWorkspaceFileRequest] = useState<string | null>(null);
+  const [fileContexts, setFileContexts] = useState<FileContextChip[]>([]);
+  const [fileContextHighlight, setFileContextHighlight] = useState<{ path: string; start: number; end: number } | null>(null);
+  const [atQuery, setAtQuery] = useState<string | null>(null);
+  const [fileMentions, setFileMentions] = useState<FileMentionHit[]>([]);
+  const [workspaceDiff, setWorkspaceDiff] = useState<ProjectDiff | null>(null);
+  const [workspaceDiffKind, setWorkspaceDiffKind] = useState<"working" | "turn">("working");
+  const [workspaceDiffLoading, setWorkspaceDiffLoading] = useState(false);
+  const [workspaceDiffError, setWorkspaceDiffError] = useState("");
   const [commandPanel, setCommandPanel] = useState<CommandPanel>(null);
   const [commandPanelData, setCommandPanelData] = useState<any>(null);
   const [commandPanelLoading, setCommandPanelLoading] = useState(false);
@@ -1252,222 +1377,200 @@ export default function Home() {
   const [permissionDraft, setPermissionDraft] = useState<PermissionDraft>(runtimePermissionDraft(defaultRuntimeSettings));
   const [renameValue, setRenameValue] = useState("");
   const [mentionQuery, setMentionQuery] = useState("");
-  const [slashIndex, setSlashIndex] = useState(0);
   const [expandedMcpServers, setExpandedMcpServers] = useState<Set<string>>(() => new Set());
   const [draggingPinnedDir, setDraggingPinnedDir] = useState<string | null>(null);
   const [dropTargetPinnedDir, setDropTargetPinnedDir] = useState<string | null>(null);
   const autoNamedThreadIds = useRef<Set<string>>(new Set());
   const wsRef = useRef<WebSocket | null>(null);
+  const bootstrapRef = useRef<Bootstrap | null>(null);
   const selectedThreadIdRef = useRef<string | null>(null);
   const knownThreadIdsRef = useRef<Set<string>>(new Set());
+  /** Thread keys currently resident in Codex app-server memory (warm / skip cold resume). */
+  const warmThreadIdsRef = useRef<Set<string>>(new Set());
   const dismissedThreadIdsRef = useRef<Set<string>>(new Set());
-  const promptRef = useRef<HTMLTextAreaElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const pendingReplies = useRef(new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void }>());
-  const drainingQueuedPromptId = useRef<string | null>(null);
-  const failedQueuedPromptId = useRef<string | null>(null);
+  const composerRef = useRef<ComposerHandle | null>(null);
+  const draftsRef = useRef<Record<string, string>>({});
+  const mentionLoadGen = useRef(0);
+  const startProviderActionRef = useRef<(provider: ProviderId) => void>(() => undefined);
+  const providerDetailsActionRef = useRef<() => void>(() => undefined);
+  const queueSnapshotRef = useRef(queueSnapshot);
+  queueSnapshotRef.current = queueSnapshot;
+  const restoredCwdResolved = useRef(false);
+  const pendingReplies = useRef(new Map<string, {
+    resolve: (value: any) => void;
+    reject: (error: Error) => void;
+    timeout: number;
+  }>());
+  const legacyQueueMigrationRunning = useRef(false);
   const runtimeInitialized = useRef(false);
   const reconnectAttempt = useRef(0);
   const requestSeq = useRef(1);
+  const sessionCreatingRef = useRef(false);
   const sessionManagerRequestSeq = useRef(0);
+  const sessionRefreshRequestSeq = useRef(0);
   const turnDiffBaselines = useRef(new Map<string, TurnDiffBaseline>());
   const completedTurnNotifications = useRef(new Set<string>());
   const completionPopupTimer = useRef<number | null>(null);
+  const uploadSlotsInUse = useRef(0);
+  const appShellRef = useRef<HTMLElement | null>(null);
 
-  const currentThreadKey = selectedThread?.id || "";
-  const items = itemsByThread[currentThreadKey] || EMPTY_ITEMS;
-  const itemOrder = itemOrderByThread[currentThreadKey] || EMPTY_ORDER;
-  const turnsById = turnsByThread[currentThreadKey] || EMPTY_TURNS;
-  const turnOrder = turnOrderByThread[currentThreadKey] || EMPTY_ORDER;
-  const pendingPrompt = pendingPromptByThread[currentThreadKey] || "";
-  const prompt = promptByThread[currentThreadKey] || "";
+  function setNotice(message: string, tone?: NoticeTone) {
+    setNoticeMessage(message);
+    setNoticeTone(message ? tone || inferredNoticeTone(message) : "info");
+  }
+
+  const currentProviderStatus = providerStatus(bootstrap, selectedProvider);
+  bootstrapRef.current = bootstrap;
+  const providerProtocolEnabled = Boolean(bootstrap?.providers);
+  const selectedThreadProvider = providerOf(selectedThread);
+  const selectedThreadProviderStatus = providerStatus(bootstrap, selectedThreadProvider);
+  const runtimeSettings = runtimeSettingsByProvider[selectedProvider] || providerRuntimeDefaults(selectedProvider);
+  const currentCapabilities = currentProviderStatus.capabilities || providerCapabilityDefaults[selectedProvider];
+  const supportsApprovals = providerCapability(currentProviderStatus, "approvals");
+  const supportsSteer = providerCapability(currentProviderStatus, "steer");
+  const supportsReasoning = providerCapability(currentProviderStatus, "reasoning");
+  const supportsServiceTier = providerCapability(currentProviderStatus, "serviceTier");
+  const isCursorProvider = selectedProvider === "cursor";
+  const currentThreadKey = threadKey(selectedThread);
   const tokenUsage = tokenUsageByThread[currentThreadKey] ?? null;
-
-  const setItemsForThread = useCallback(
-    (threadId: string | null | undefined, updater: Record<string, ThreadItem> | ((current: Record<string, ThreadItem>) => Record<string, ThreadItem>)) => {
-      if (!threadId) return;
-      setItemsByThread((current) => {
-        const old = current[threadId] || EMPTY_ITEMS;
-        const next = typeof updater === "function" ? updater(old) : updater;
-        if (next === old) return current;
-        return { ...current, [threadId]: next };
-      });
-    },
-    []
-  );
-  const setItemOrderForThread = useCallback(
-    (threadId: string | null | undefined, updater: string[] | ((current: string[]) => string[])) => {
-      if (!threadId) return;
-      setItemOrderByThread((current) => {
-        const old = current[threadId] || EMPTY_ORDER;
-        const next = typeof updater === "function" ? updater(old) : updater;
-        if (next === old) return current;
-        return { ...current, [threadId]: next };
-      });
-    },
-    []
-  );
-  const setTurnsForThread = useCallback(
-    (threadId: string | null | undefined, updater: Record<string, TurnGroup> | ((current: Record<string, TurnGroup>) => Record<string, TurnGroup>)) => {
-      if (!threadId) return;
-      setTurnsByThread((current) => {
-        const old = current[threadId] || EMPTY_TURNS;
-        const next = typeof updater === "function" ? updater(old) : updater;
-        if (next === old) return current;
-        return { ...current, [threadId]: next };
-      });
-    },
-    []
-  );
-  const setTurnOrderForThread = useCallback(
-    (threadId: string | null | undefined, updater: string[] | ((current: string[]) => string[])) => {
-      if (!threadId) return;
-      setTurnOrderByThread((current) => {
-        const old = current[threadId] || EMPTY_ORDER;
-        const next = typeof updater === "function" ? updater(old) : updater;
-        if (next === old) return current;
-        return { ...current, [threadId]: next };
-      });
-    },
-    []
-  );
-  const setPendingPrompt = useCallback(
-    (value: string) => {
-      const tid = selectedThreadIdRef.current || "";
-      setPendingPromptByThread((current) => {
-        if ((current[tid] || "") === value) return current;
-        return { ...current, [tid]: value };
-      });
-    },
-    []
-  );
-  const setPrompt = useCallback(
-    (value: string | ((current: string) => string)) => {
-      const tid = selectedThreadIdRef.current || "";
-      setPromptByThread((current) => {
-        const old = current[tid] || "";
-        const next = typeof value === "function" ? value(old) : value;
-        if (next === old) return current;
-        return { ...current, [tid]: next };
-      });
-    },
-    []
-  );
+  const setPendingPrompt = useCallback((value: string) => {
+    setPendingPromptForThread(selectedThreadIdRef.current || "", value);
+  }, []);
+  const markThreadLive = useCallback((threadId: string) => {
+    if (!threadId) return;
+    setPendingLiveThreadKeys((current) => (current.includes(threadId) ? current : [...current, threadId]));
+  }, []);
+  const clearThreadLive = useCallback((threadId: string) => {
+    if (!threadId) return;
+    setPendingLiveThreadKeys((current) => (current.includes(threadId) ? current.filter((key) => key !== threadId) : current));
+  }, []);
   const discardThreadBucket = useCallback((threadId: string) => {
     if (!threadId) return;
-    const drop = (record: Record<string, unknown>) => {
-      if (!(threadId in record)) return record;
-      const next = { ...record };
+    discardThreadView(threadId);
+    setAttachmentsByThread((current) => {
+      if (!(threadId in current)) return current;
+      const next = { ...current };
       delete next[threadId];
       return next;
-    };
-    setItemsByThread((current) => drop(current) as Record<string, Record<string, ThreadItem>>);
-    setItemOrderByThread((current) => drop(current) as Record<string, string[]>);
-    setTurnsByThread((current) => drop(current) as Record<string, Record<string, TurnGroup>>);
-    setTurnOrderByThread((current) => drop(current) as Record<string, string[]>);
-    setPendingPromptByThread((current) => drop(current) as Record<string, string>);
-    setPromptByThread((current) => drop(current) as Record<string, string>);
-    setTokenUsageByThread((current) => drop(current) as Record<string, unknown>);
+    });
+    if (threadId in draftsRef.current) {
+      const next = { ...draftsRef.current };
+      delete next[threadId];
+      draftsRef.current = next;
+    }
+    setTokenUsageByThread((current) => {
+      if (!(threadId in current)) return current;
+      const next = { ...current };
+      delete next[threadId];
+      return next;
+    });
+    setModeOverrideByThread((current) => {
+      if (!(threadId in current)) return current;
+      const next = { ...current };
+      delete next[threadId];
+      return next;
+    });
   }, []);
 
-  const renderedItems = useDeferredValue(items);
-  const mode = runtimeSettings.mode;
+  const reconcileModeOverrides = useCallback((incoming: Thread[]) => {
+    if (!incoming.length) return;
+    setModeOverrideByThread((current) => {
+      let next = current;
+      for (const thread of incoming) {
+        const key = threadKey(thread);
+        if (!current[key] || current[key] !== sessionModeForThread(thread, "default")) continue;
+        if (next === current) next = { ...current };
+        delete next[key];
+      }
+      return next;
+    });
+  }, []);
+
+  const commitSessionMode = useCallback((key: string, nextMode: ModeKind) => {
+    const applyMode = (thread: Thread): Thread => ({
+      ...thread,
+      mode: nextMode,
+      runtime: thread.runtime ? { ...thread.runtime, mode: nextMode } : thread.runtime
+    });
+    setSelectedThread((current) => current && threadKey(current) === key ? applyMode(current) : current);
+    setThreads((current) => current.map((thread) => threadKey(thread) === key ? applyMode(thread) : thread));
+    setModeOverrideByThread((current) => {
+      if (!(key in current)) return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  }, []);
+
   const sessionModel = runtimeSettings.model;
-  const fastModeEnabled = runtimeSettings.serviceTier === "fast";
-  const fastModeText = `Fast mode: ${fastModeEnabled ? "on" : "off"}`;
-  const serviceTierText = runtimeSettings.serviceTier || "server default";
-  const activeTurnId = selectedThread ? activeTurnIdsByThread[selectedThread.id] || null : null;
-  const selectedQueuedPrompts = selectedThread ? queuedPromptsByThread[selectedThread.id] || [] : [];
-  const nextQueuedPrompt = selectedQueuedPrompts[0] || null;
-  const latestPlanText = useMemo(() => {
-    const latestPlanLikeItem = [...itemOrder]
-      .reverse()
-      .map((id) => items[id])
-      .find((item) => item?.type === "plan" || item?.type === "agentMessage");
-    return latestPlanLikeItem ? itemText(latestPlanLikeItem).trim().slice(0, 12000) : "";
-  }, [itemOrder, items]);
-
-  const groupedRounds = useMemo<DisplayTurn[]>(() => {
-    const rounds: DisplayTurn[] = [];
-    const chronologicalItems = itemOrder.map((id) => renderedItems[id]).filter((item): item is ThreadItem => Boolean(item));
-    const turnIdByItemId = new Map<string, string>();
-    const roundsByTurnId = new Map<string, DisplayTurn>();
-    const seenItemIds = new Set<string>();
-
-    for (const turnId of turnOrder) {
-      const turn = turnsById[turnId];
-      if (!turn) continue;
-      for (const itemId of turn.itemIds || []) {
-        if (!turnIdByItemId.has(itemId)) turnIdByItemId.set(itemId, turnId);
-      }
-    }
-
-    let currentLooseRound: DisplayTurn | null = null;
-
-    for (const item of chronologicalItems) {
-      if (seenItemIds.has(item.id)) continue;
-      seenItemIds.add(item.id);
-
-      const turnId = turnIdByItemId.get(item.id);
-      const turn = turnId ? turnsById[turnId] : null;
-      if (turnId && turn) {
-        let round = roundsByTurnId.get(turnId);
-        if (!round) {
-          round = { ...turn, itemIds: [], items: [] };
-          roundsByTurnId.set(turnId, round);
-          rounds.push(round);
-        }
-        round.itemIds.push(item.id);
-        round.items.push(item);
-        currentLooseRound = null;
-        continue;
-      }
-
-      if (item.type === "userMessage" || !currentLooseRound) {
-        currentLooseRound = {
-          id: `round-${item.id}`,
-          itemIds: [item.id],
-          status: { type: "completed" },
-          items: [item]
-        };
-        rounds.push(currentLooseRound);
-        continue;
-      }
-
-      currentLooseRound.itemIds.push(item.id);
-      currentLooseRound.items.push(item);
-    }
-
-    const displayRounds = rounds.reverse();
-    if (pendingPrompt) {
-      displayRounds.unshift({
-        id: "pending-start",
-        itemIds: ["pending-user-message"],
-        status: { type: "sending" },
-        startedAt: nowSeconds(),
-        updatedAt: nowSeconds(),
-        pending: true,
-        items: [
-          {
-            id: "pending-user-message",
-            type: "userMessage",
-            content: inputItems(pendingPrompt)
-          }
-        ]
-      });
-    }
-
-    return displayRounds;
-  }, [itemOrder, pendingPrompt, renderedItems, turnOrder, turnsById]);
-  const activeRequest = pendingRequests[0] || null;
-  const activeTurnItemIds = activeTurnId ? new Set(turnsById[activeTurnId]?.itemIds || []) : null;
-  const orderedThreads = useMemo(
-    () => [...threads].sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0)),
-    [threads]
+  const activeTurnId = selectedThread ? activeTurnIdsByThread[threadKey(selectedThread)] || null : null;
+  const displayedThreadRuntime = selectedThread?.runtime || null;
+  const displayedModel = displayedThreadRuntime?.model || sessionModel;
+  const displayedReasoning = displayedThreadRuntime?.reasoningEffort ?? runtimeSettings.reasoningEffort;
+  const displayedServiceTier = displayedThreadRuntime?.serviceTier || runtimeSettings.serviceTier || "default";
+  const displayedFastMode = isFastServiceTier(displayedServiceTier);
+  const latestPlanText = latestPlanTextFor(currentThreadKey);
+  const queueSummaryByThread = useMemo(() => queueSummariesByThread(queueSnapshot), [queueSnapshot]);
+  const currentQueueSummary = useMemo(
+    () => queueThreadSummary(queueSnapshot, currentThreadKey),
+    [currentThreadKey, queueSnapshot]
   );
-  const threadGroups = useMemo<ThreadGroup[]>(() => buildThreadGroups(orderedThreads, pinnedDirs), [orderedThreads, pinnedDirs]);
+  const waitingThreadIds = useMemo(() => waitingThreadIdsFromRequests(pendingRequests), [pendingRequests]);
+  const serverSelectedMode = selectedThread ? sessionModeForThread(selectedThread, "default") : runtimeSettings.mode;
+  const latestPlanPayload = useLatestPlanPayload(
+    currentThreadKey,
+    Boolean(selectedThread && serverSelectedMode === "plan" && !activeTurnId)
+  );
+  const sessionExecutionState = useMemo(
+    () => deriveSessionExecutionState({
+      thread: selectedThread,
+      provider: selectedThread ? selectedThreadProvider : selectedProvider,
+      providerDefaultMode: runtimeSettings.mode,
+      modeOverride: currentThreadKey ? modeOverrideByThread[currentThreadKey] : null,
+      activeTurnId,
+      queueSummary: currentQueueSummary,
+      waitingForInput: Boolean(
+        currentThreadKey
+        && (waitingThreadIds.has(currentThreadKey) || waitingThreadIds.has(selectedThread?.nativeId || ""))
+      ),
+      planPayload: latestPlanPayload
+    }),
+    [
+      activeTurnId,
+      currentQueueSummary,
+      currentThreadKey,
+      latestPlanPayload,
+      modeOverrideByThread,
+      runtimeSettings.mode,
+      selectedProvider,
+      selectedThread,
+      selectedThreadProvider,
+      waitingThreadIds
+    ]
+  );
+  const mode = sessionExecutionState.mode;
+  const currentQueuePaused = Boolean(currentQueueSummary.threadState?.paused);
+  const attachmentBucket = currentThreadKey || `${selectedProvider}:new`;
+  const attachments = attachmentsByThread[attachmentBucket] || [];
+  const uploadMaxBytes = bootstrap?.uploads?.maxBytes || 50 * 1024 * 1024;
+  const uploadMaxFiles = bootstrap?.uploads?.maxFiles || 8;
+
+  const activeRequest = pendingRequests[0] || null;
+  const activeRequestProvider = ((activeRequest?.params as { provider?: ProviderId } | undefined)?.provider || "codex") as ProviderId;
+  const orderedThreads = useMemo(
+    () => threads.filter((thread) => !thread.empty || threadKey(thread) === currentThreadKey),
+    [currentThreadKey, threads]
+  );
+  const selectedThreadIndex = useMemo(
+    () => currentThreadKey ? orderedThreads.findIndex((thread) => threadKey(thread) === currentThreadKey) : -1,
+    [currentThreadKey, orderedThreads]
+  );
+  const newerThread = selectedThreadIndex > 0 ? orderedThreads[selectedThreadIndex - 1] : null;
+  const olderThread = selectedThreadIndex >= 0 && selectedThreadIndex + 1 < orderedThreads.length
+    ? orderedThreads[selectedThreadIndex + 1]
+    : null;
   const orderedSessionManagerThreads = useMemo(
-    () => [...sessionManagerThreads].sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0)),
+    () => [...sessionManagerThreads].sort(compareThreadsByRecency),
     [sessionManagerThreads]
   );
   const sessionManagerGroups = useMemo<ThreadGroup[]>(
@@ -1481,13 +1584,77 @@ export default function Home() {
     [collapsedSessionManagerGroups]
   );
   const pinTarget = normalizeDirectoryPath(project?.realpath || cwd);
+  const workspaceRoot = selectedRoot(selectedThread, project, cwd);
   const pinTargetPinned = Boolean(pinTarget && pinnedDirSet.has(pinTarget));
-  const waitingThreadIds = useMemo(() => waitingThreadIdsFromRequests(pendingRequests), [pendingRequests]);
+  const fleetSources = useMemo<FleetThreadSource[]>(
+    () => orderedThreads.map((thread) => {
+      const key = threadKey(thread);
+      const queue = queueSummaryByThread.get(key) || queueThreadSummary(queueSnapshot, key);
+      const provider = providerOf(thread);
+      const execution = deriveSessionExecutionState({
+        thread,
+        provider,
+        providerDefaultMode: runtimeSettingsByProvider[provider]?.mode || providerRuntimeDefaults(provider).mode,
+        modeOverride: modeOverrideByThread[key],
+        activeTurnId: activeTurnIdsByThread[key] || null,
+        queueSummary: queue,
+        waitingForInput: waitingThreadIds.has(key) || waitingThreadIds.has(thread.nativeId || "")
+      });
+      return {
+        key,
+        provider,
+        title: threadTitle(thread),
+        cwd: thread.cwd,
+        directory: directoryLabel(thread.cwd),
+        updatedAt: thread.updatedAt || 0,
+        statusLabel: statusLabel(thread.status),
+        model: thread.runtime?.model,
+        reasoningEffort: thread.runtime?.reasoningEffort,
+        serviceTier: thread.runtime ? thread.runtime.serviceTier || "default" : null,
+        mode: execution.mode,
+        queueCount: queue?.items.length || 0,
+        queuePaused: Boolean(queue?.threadState?.paused)
+      };
+    }),
+    [activeTurnIdsByThread, modeOverrideByThread, orderedThreads, queueSnapshot, queueSummaryByThread, runtimeSettingsByProvider, waitingThreadIds]
+  );
+  const fleetRequests = useMemo<FleetRequestSource[]>(
+    () => pendingRequests.map((request) => {
+      const params = request.params as { threadId?: string; provider?: ProviderId } | undefined;
+      return {
+        threadKey: params?.threadId ? threadKey(params.threadId, params.provider || "codex") : "",
+        label: request.method === "item/tool/requestUserInput" ? "Question" : approvalTitle(request)
+      };
+    }),
+    [pendingRequests]
+  );
+  const fleetSections = useMemo(
+    () => buildFleetSections({
+      threads: fleetSources,
+      requests: fleetRequests,
+      activeThreadKeys: Object.entries(activeTurnIdsByThread).filter(([, turnId]) => Boolean(turnId)).map(([key]) => key),
+      pendingLiveThreadKeys,
+      pinnedThreadKeys
+    }),
+    [activeTurnIdsByThread, fleetRequests, fleetSources, pendingLiveThreadKeys, pinnedThreadKeys]
+  );
+  const fleetByKey = useMemo(() => new Map(fleetSections.all.map((thread) => [thread.key, thread])), [fleetSections.all]);
+  const liveThreadKeys = useMemo(() => attentionThreadKeys(fleetSections), [fleetSections]);
+  const listedThreads = useMemo(
+    () => orderedThreads.filter((thread) => !liveThreadKeys.has(threadKey(thread))),
+    [liveThreadKeys, orderedThreads]
+  );
+  const listedThreadGroups = useMemo<ThreadGroup[]>(
+    () => buildThreadGroups(listedThreads, pinnedDirs),
+    [listedThreads, pinnedDirs]
+  );
+  const threadByKey = useMemo(() => new Map(orderedThreads.map((thread) => [threadKey(thread), thread])), [orderedThreads]);
   const mcpRecentByServer = useMemo(() => {
     const result: Record<string, Array<{ id: string; tool: string; status: string }>> = {};
     if (!selectedThread) return result;
-    const itemsForThread = itemsByThread[selectedThread.id] || EMPTY_ITEMS;
-    const orderForThread = itemOrderByThread[selectedThread.id] || EMPTY_ORDER;
+    const view = getThreadViewState();
+    const itemsForThread = view.itemsByThread[threadKey(selectedThread)] || {};
+    const orderForThread = view.itemOrderByThread[threadKey(selectedThread)] || [];
     for (const id of orderForThread) {
       const item = itemsForThread[id] as ThreadItem & { server?: string; tool?: string } | undefined;
       if (!item || item.type !== "mcpToolCall") continue;
@@ -1504,32 +1671,52 @@ export default function Home() {
       result[key] = result[key].slice(-3).reverse();
     }
     return result;
-  }, [selectedThread, itemsByThread, itemOrderByThread]);
+  }, [selectedThread, commandPanel, workspaceView]);
   const currentProjectLabel = directoryLabel(project?.realpath || cwd);
   const usageLabel = formatTokenUsage(tokenUsage);
-  const slashOpen = prompt.startsWith("/") && !prompt.trim().includes(" ");
-  const slashContext = useMemo(
-    () => ({ hasThread: Boolean(selectedThread), activeTurn: Boolean(activeTurnId) }),
-    [activeTurnId, selectedThread]
+  const startProviderAvailability = providerOrder
+    .map((provider) => providerAvailable(providerStatus(bootstrap, provider)))
+    .join(":");
+  const startProviders = useMemo(
+    () =>
+      providerOrder.map((id) => ({
+        id,
+        label: providerName(id),
+        available: providerAvailable(providerStatus(bootstrap, id))
+      })),
+    [startProviderAvailability]
   );
-  const slashMatches = useMemo(() => (slashOpen ? filterSlashCommands(prompt) : []), [prompt, slashOpen]);
-  const selectedSlashIndex = slashMatches.length ? Math.min(slashIndex, slashMatches.length - 1) : 0;
-  const selectedSlashCommand = slashMatches[selectedSlashIndex] || null;
+  const onShowAllHistory = useCallback(() => setShowAllHistory(true), []);
+  const onStartProvider = useCallback((provider: ProviderId) => {
+    startProviderActionRef.current(provider);
+  }, []);
+  const onProviderDetails = useCallback(() => {
+    providerDetailsActionRef.current();
+  }, []);
+  const slashContext = useMemo(
+    () => ({ hasThread: Boolean(selectedThread), activeTurn: Boolean(activeTurnId), provider: selectedProvider }),
+    [activeTurnId, selectedProvider, selectedThread]
+  );
 
   const call = useCallback((message: Omit<any, "requestId">) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error("WebSocket is not connected."));
 
     const requestId = `web-${requestSeq.current++}`;
-    ws.send(JSON.stringify({ ...message, requestId }));
-
     return new Promise<any>((resolve, reject) => {
-      pendingReplies.current.set(requestId, { resolve, reject });
-      window.setTimeout(() => {
+      const timeout = window.setTimeout(() => {
         if (!pendingReplies.current.has(requestId)) return;
         pendingReplies.current.delete(requestId);
         reject(new Error("Request timed out."));
       }, 120_000);
+      pendingReplies.current.set(requestId, { resolve, reject, timeout });
+      try {
+        ws.send(JSON.stringify({ ...message, requestId }));
+      } catch (error) {
+        window.clearTimeout(timeout);
+        pendingReplies.current.delete(requestId);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }, []);
 
@@ -1538,20 +1725,26 @@ export default function Home() {
     [call]
   );
 
-  const registerTurnItem = useCallback(
-    (threadId: string | null | undefined, turnId?: string, itemId?: string) => {
-      if (!threadId || !turnId || !itemId) return;
-      setTurnsForThread(threadId, (current) => {
-        const turn = current[turnId] || { id: turnId, itemIds: [] };
-        if (turn.itemIds?.includes(itemId)) return current;
-        return {
-          ...current,
-          [turnId]: { ...turn, itemIds: uniqueAppend(turn.itemIds || [], itemId), updatedAt: nowSeconds() }
-        };
-      });
-      setTurnOrderForThread(threadId, (current) => uniqueAppend(current, turnId));
+  const agent = useCallback(
+    (provider: ProviderId, method: string, params?: unknown) => {
+      const wireMethod = provider === "cursor" ? cursorMethod(method) : method;
+      const baseParams = params && typeof params === "object" && !Array.isArray(params)
+        ? { ...params, provider }
+        : params;
+      const nextParams = provider === "cursor" ? cursorParams(method, baseParams) : baseParams;
+      if (provider === "codex" && !providerProtocolEnabled) {
+        return call({ type: "codex:request", method, params: nextParams });
+      }
+      return call({ type: "agent:request", provider, method: wireMethod, params: nextParams }).then((response) =>
+        normalizeAgentResponse(method, response, provider)
+      );
     },
-    [setTurnOrderForThread, setTurnsForThread]
+    [call, providerProtocolEnabled]
+  );
+
+  const sessionAgent = useCallback(
+    (method: string, params?: unknown, provider: ProviderId = selectedProvider) => agent(provider, method, params),
+    [agent, selectedProvider]
   );
 
   const updateActiveTurn = useCallback((threadId?: string, turnId?: string | null, expectedTurnId?: string) => {
@@ -1569,38 +1762,78 @@ export default function Home() {
     });
   }, []);
 
-  function updatePromptQueue(updater: (current: Record<string, QueuedPrompt[]>) => Record<string, QueuedPrompt[]>) {
-    setQueuedPromptsByThread((current) => {
-      const next = updater(current);
-      window.localStorage.setItem(promptQueueStorageKey, JSON.stringify(next));
-      return next;
-    });
+  async function enqueuePrompt(
+    threadId: string,
+    text: string,
+    settings?: SessionRuntimeSettings,
+    threadOverride?: Thread,
+    identity: { id?: string; createdAt?: number } = {}
+  ) {
+    const provider = providerFromThreadKey(threadId);
+    const thread = threadOverride || threadByKey.get(threadId) || (selectedThread && threadKey(selectedThread) === threadId ? selectedThread : null);
+    if (!thread) throw new Error("Queue target thread is not loaded.");
+    const runtime = settings || runtimeSettingsByProvider[provider] || providerRuntimeDefaults(provider);
+    const item = {
+      id: identity.id || queueId(),
+      provider,
+      threadKey: threadId,
+      threadId: nativeThreadId(thread),
+      text,
+      cwd: thread.cwd || selectedRoot(thread, project, cwd),
+      threadParams: runtimeThreadParams(runtime),
+      turnParams: {
+        ...runtimeTurnParams(runtime),
+        ...(provider === "codex"
+          ? { collaborationMode: buildCollaborationMode(runtime, bootstrap?.codex?.collaborationModes || [], runtime.model, runtime.mode) }
+          : {})
+      },
+      createdAt: identity.createdAt || nowSeconds()
+    };
+    markThreadLive(threadId);
+    try {
+      const response = await call({ type: "queue:enqueue", item });
+      if (response?.snapshot) setQueueSnapshot(response.snapshot);
+      commitSessionMode(threadId, runtime.mode);
+      return response?.item as QueuedPrompt | undefined;
+    } catch (error) {
+      clearThreadLive(threadId);
+      throw error;
+    }
   }
 
-  function enqueuePrompt(threadId: string, text: string) {
-    const queuedPrompt = { id: queueId(), threadId, text, createdAt: nowSeconds() };
-    updatePromptQueue((current) => ({
-      ...current,
-      [threadId]: [...(current[threadId] || []), queuedPrompt]
-    }));
+  async function clearQueuedPrompts(threadId: string) {
+    await call({ type: "queue:clear", threadKey: threadId });
   }
 
-  function removeQueuedPrompt(threadId: string, promptId: string) {
-    updatePromptQueue((current) => {
-      const nextPrompts = (current[threadId] || []).filter((queuedPrompt) => queuedPrompt.id !== promptId);
-      const next = { ...current };
-      if (nextPrompts.length) next[threadId] = nextPrompts;
-      else delete next[threadId];
-      return next;
-    });
+  async function refreshQueueSnapshot() {
+    const snapshot = await call({ type: "queue:list" });
+    if (snapshot) applyQueueSnapshot(snapshot);
   }
 
-  function clearQueuedPrompts(threadId: string) {
-    updatePromptQueue((current) => {
-      const next = { ...current };
-      delete next[threadId];
-      return next;
-    });
+  async function retryQueuedPrompt(item: QueuedPrompt) {
+    setQueueAction(`retry:${item.id}`);
+    try {
+      await call({ type: "queue:retry", queueId: item.id });
+      await refreshQueueSnapshot();
+      setNotice("Task returned to the server queue.", "success");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      setQueueAction(null);
+    }
+  }
+
+  async function removeQueuedPrompt(item: QueuedPrompt) {
+    setQueueAction(`remove:${item.id}`);
+    try {
+      await call({ type: "queue:cancel", queueId: item.id });
+      await refreshQueueSnapshot();
+      setNotice("Queued task removed.", "success");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      setQueueAction(null);
+    }
   }
 
   function clearSelectedThreadState(threadId?: string) {
@@ -1613,75 +1846,85 @@ export default function Home() {
   }
 
   function removeArchivedThread(threadId: string) {
-    setThreads((current) => current.filter((thread) => thread.id !== threadId));
-    setSessionManagerThreads((current) => current.filter((thread) => thread.id !== threadId));
-    clearQueuedPrompts(threadId);
+    warmThreadIdsRef.current.delete(threadId);
+    removePinnedThread(threadId);
+    setThreads((current) => current.filter((thread) => threadKey(thread) !== threadId));
+    setSessionManagerThreads((current) => current.filter((thread) => threadKey(thread) !== threadId));
+    void clearQueuedPrompts(threadId).catch(() => undefined);
     clearSelectedThreadState(threadId);
   }
 
   function restoreUnarchivedThread(thread: Thread) {
-    knownThreadIdsRef.current.add(thread.id);
-    dismissedThreadIdsRef.current.delete(thread.id);
+    knownThreadIdsRef.current.add(threadKey(thread));
+    dismissedThreadIdsRef.current.delete(threadKey(thread));
     setThreads((current) => mergeThreadsById(current, [thread]));
-    setSessionManagerThreads((current) => current.filter((item) => item.id !== thread.id));
+    setSessionManagerThreads((current) => current.filter((item) => threadKey(item) !== threadKey(thread)));
   }
 
-  const applyItemsFromTurns = useCallback(
-    (threadId: string | null | undefined, turns: Turn[]) => {
-      if (!threadId) return;
-      const nextItems: Record<string, ThreadItem> = {};
-      const nextOrder: string[] = [];
-      const nextTurns: Record<string, TurnGroup> = {};
-      const nextTurnOrder: string[] = [];
-      for (const turn of turns) {
-        const itemIds: string[] = [];
-        for (const item of turn.items || []) {
-          nextItems[item.id] = item;
-          if (!nextOrder.includes(item.id)) nextOrder.push(item.id);
-          if (!itemIds.includes(item.id)) itemIds.push(item.id);
-        }
-        nextTurns[turn.id] = {
-          id: turn.id,
-          itemIds,
-          status: turn.status,
-          startedAt: turn.startedAt,
-          completedAt: turn.completedAt,
-          updatedAt: turn.completedAt || turn.startedAt
-        };
-        if (!nextTurnOrder.includes(turn.id)) nextTurnOrder.push(turn.id);
-      }
-      setItemsByThread((current) => ({ ...current, [threadId]: nextItems }));
-      setItemOrderByThread((current) => ({ ...current, [threadId]: nextOrder }));
-      setTurnsByThread((current) => ({ ...current, [threadId]: nextTurns }));
-      setTurnOrderByThread((current) => ({ ...current, [threadId]: nextTurnOrder }));
-    },
-    []
-  );
-
-  const refreshSelectedThread = useCallback(async () => {
-    const threadId = selectedThreadIdRef.current;
+  const refreshSelectedThread = useCallback(async (expectedThreadId?: string | null) => {
+    const threadId = expectedThreadId || selectedThreadIdRef.current;
     if (!threadId) return;
+    const provider = providerFromThreadKey(threadId);
 
-    const response = await codex("thread/read", { threadId, includeTurns: true });
+    const response = await agent(provider, "thread/read", { threadId: nativeThreadId(threadId), includeTurns: true, provider });
     if (selectedThreadIdRef.current !== threadId) return;
-    const refreshed = response.thread as Thread;
+    const refreshed = normalizeThread({ ...(response.thread as Thread), provider });
     if (!refreshed?.id) return;
 
     setSelectedThread(refreshed);
-    updateActiveTurn(refreshed.id, activeTurnIdFromTurns(refreshed.turns || []));
-    setThreads((current) => [refreshed, ...current.filter((candidate) => candidate.id !== refreshed.id)]);
-    applyItemsFromTurns(refreshed.id, refreshed.turns || []);
-  }, [applyItemsFromTurns, codex, updateActiveTurn]);
+    const queueTurnId = activeQueueTurns(queueSnapshotRef.current).get(threadId) || null;
+    updateActiveTurn(threadId, queueTurnId || activeTurnIdFromTurns(refreshed.turns || []));
+    setThreads((current) => patchListedThread(current, refreshed, threadId));
+    reconcileModeOverrides([refreshed]);
+    applyItemsFromTurns(threadId, refreshed.turns || []);
+  }, [agent, applyItemsFromTurns, reconcileModeOverrides, updateActiveTurn]);
 
   const loadThreads = useCallback(async () => {
-    const response = await codex("thread/list", { limit: 50, sortDirection: "desc" });
-    setThreads(response.data || []);
-  }, [codex]);
+    const availableProviders = providerOrder.filter((provider) => providerAvailable(providerStatus(bootstrapRef.current, provider)));
+    const targets = availableProviders.length ? availableProviders : ["codex" as ProviderId];
+    const results = await Promise.all(
+      targets.map((provider) =>
+        agent(provider, "thread/list", { limit: 50, sortDirection: "desc", provider })
+          .then((response) => normalizeThreads(response.data || []))
+          .catch((error) => {
+            if (provider === "codex") throw error;
+            return [] as Thread[];
+          })
+      )
+    );
+    const nextThreads = mergeThreadsById([], results.flat()).filter(
+      (thread) => !dismissedThreadIdsRef.current.has(threadKey(thread))
+    );
+    const snapshots = nextThreads.map((thread) => ({
+      key: threadKey(thread),
+      statusLabel: statusLabel(thread.status)
+    }));
+    const liveQueue = queueSnapshotRef.current;
+    const keepKeys = activeQueueTurns(liveQueue).keys();
+    setActiveTurnIdsByThread((current) => {
+      const reconciled = reconcileActiveTurns(current, snapshots, keepKeys);
+      let next = reconciled;
+      for (const [threadKeyValue, runId] of activeQueueTurns(liveQueue)) {
+        if (next[threadKeyValue] === runId) continue;
+        if (next === reconciled) next = { ...reconciled };
+        next[threadKeyValue] = runId;
+      }
+      return next;
+    });
+    setSelectedThread((current) => {
+      if (!current) return current;
+      const latest = nextThreads.find((thread) => threadKey(thread) === threadKey(current));
+      if (!latest) return current;
+      return { ...current, ...latest, turns: current.turns?.length ? current.turns : latest.turns };
+    });
+    reconcileModeOverrides(nextThreads);
+    setThreads(nextThreads);
+  }, [agent, reconcileModeOverrides]);
 
   const loadSessionManagerPage = useCallback(
     async (cursor: string | null = null) => {
       if (wsState !== "online") {
-        setSessionManagerError("Codex is not connected.");
+        setSessionManagerError(`${providerName(selectedProvider)} is not connected.`);
         return;
       }
 
@@ -1691,18 +1934,37 @@ export default function Home() {
       setSessionManagerError("");
 
       try {
-        const response = await codex("thread/list", {
+        const targetProviders = sessionManagerProviderFilter === "all"
+          ? providerOrder.filter((provider) => providerAvailable(providerStatus(bootstrap, provider)))
+          : [sessionManagerProviderFilter];
+        const providersToLoad = targetProviders.length ? targetProviders : ["codex" as ProviderId];
+        const responses = await Promise.all(
+          providersToLoad.map((provider) =>
+            agent(provider, "thread/list", {
           limit: 75,
           cursor,
           sortKey: "updated_at",
           sortDirection: "desc",
           archived: sessionManagerArchived,
-          searchTerm: searchTerm || null
-        });
+              searchTerm: searchTerm || null,
+              provider
+            })
+              .then((response) => ({
+                provider,
+                data: normalizeThreads(response.data || []),
+                nextCursor: response.nextCursor || null
+              }))
+              .catch((error) => {
+                if (provider === "codex") throw error;
+                setNotice(`${providerName(provider)} sessions unavailable: ${error instanceof Error ? error.message : String(error)}`);
+                return { provider, data: [] as Thread[], nextCursor: null };
+              })
+          )
+        );
         if (requestId !== sessionManagerRequestSeq.current) return;
-        const nextThreads = (response.data || []) as Thread[];
+        const nextThreads = mergeThreadsById([], responses.flatMap((response) => response.data));
         setSessionManagerThreads((current) => (cursor ? mergeThreadsById(current, nextThreads) : nextThreads));
-        setSessionManagerCursor(response.nextCursor || null);
+        setSessionManagerCursor(responses.find((response) => response.nextCursor)?.nextCursor || null);
       } catch (error) {
         if (requestId === sessionManagerRequestSeq.current) {
           setSessionManagerError(error instanceof Error ? error.message : String(error));
@@ -1711,17 +1973,69 @@ export default function Home() {
         if (requestId === sessionManagerRequestSeq.current) setSessionManagerLoading(false);
       }
     },
-    [codex, sessionManagerArchived, sessionManagerSearch, wsState]
+    [agent, bootstrap, selectedProvider, sessionManagerArchived, sessionManagerProviderFilter, sessionManagerSearch, wsState]
   );
 
-  function updateRuntimeSettings(next: Partial<SessionRuntimeSettings> | ((current: SessionRuntimeSettings) => Partial<SessionRuntimeSettings>)) {
-    setRuntimeSettings((current) => ({ ...current, ...(typeof next === "function" ? next(current) : next) }));
+  function updateRuntimeSettings(
+    next: Partial<SessionRuntimeSettings> | ((current: SessionRuntimeSettings) => Partial<SessionRuntimeSettings>),
+    provider: ProviderId = selectedProvider
+  ) {
+    setRuntimeSettingsByProvider((current) => {
+      const old = current[provider] || providerRuntimeDefaults(provider);
+      const updated = { ...old, ...(typeof next === "function" ? next(old) : next), provider };
+      window.localStorage.setItem(storageKey(runtimeStorageKey(provider)), JSON.stringify(updated));
+      return { ...current, [provider]: updated };
+    });
   }
 
-  const collaborationMode = useCallback((modelOverride?: string, turnMode: ModeKind = runtimeSettings.mode) => {
+  async function selectSessionMode(nextMode: ModeKind) {
+    if (nextMode === mode) return;
+    if (sessionExecutionState.phase === "running" || sessionExecutionState.phase === "waiting") {
+      setNotice("Stop the active run before changing execution mode.");
+      return;
+    }
+
+    const nextSettings = { ...runtimeSettings, mode: nextMode };
+    if (!selectedThread) {
+      updateRuntimeSettings(nextSettings);
+      setNotice(`${modeLabel(nextMode)} mode selected for the next session.`);
+      return;
+    }
+
+    if (selectedThreadProvider === "cursor") {
+      if (isUnusedCursorThread(selectedThread)) {
+        setModeOverrideByThread((current) => ({ ...current, [currentThreadKey]: nextMode }));
+        setNotice(`${modeLabel(nextMode)} mode selected.`);
+        return;
+      }
+      const reusable = threads.find((thread) => (
+        threadKey(thread) !== currentThreadKey
+        && isUnusedCursorThread(thread)
+        && thread.cwd === selectedThread.cwd
+        && cursorThreadMode(thread) === nextMode
+      ));
+      if (reusable) {
+        await resumeThread(reusable);
+        setNotice(`Reused an empty Cursor ${modeLabel(nextMode)} session.`);
+        return;
+      }
+      await startThread(undefined, [], { cwd: selectedThread.cwd, runtime: nextSettings });
+      setNotice(`New empty Cursor ${modeLabel(nextMode)} session created. Cursor CLI modes are fixed per native session.`);
+      return;
+    }
+    setModeOverrideByThread((current) => ({ ...current, [currentThreadKey]: nextMode }));
+    setNotice(`${modeLabel(nextMode)} mode selected.`);
+  }
+
+  function selectProviderPreference(provider: ProviderId) {
+    setSelectedProvider(provider);
+    window.localStorage.setItem(storageKey("provider"), provider);
+  }
+
+  const collaborationMode = useCallback((modelOverride?: string, turnMode: ModeKind = mode) => {
     const settings = { ...runtimeSettings, mode: turnMode, ...(modelOverride ? { model: modelOverride } : {}) };
     return buildCollaborationMode(settings, bootstrap?.codex?.collaborationModes || [], modelOverride, turnMode);
-  }, [bootstrap?.codex?.collaborationModes, runtimeSettings]);
+  }, [bootstrap?.codex?.collaborationModes, mode, runtimeSettings]);
 
   const loadCompletedTurnDiff = useCallback(
     async (threadId: string, turnId: string) => {
@@ -1750,10 +2064,73 @@ export default function Home() {
     [registerTurnItem, setItemOrderForThread, setItemsForThread]
   );
 
+  const applyQueueSnapshot = useCallback(
+    (snapshot: QueueSnapshot) => {
+      if (!snapshot || !Array.isArray(snapshot.items) || !Array.isArray(snapshot.threads)) return;
+      queueSnapshotRef.current = snapshot;
+      setQueueSnapshot(snapshot);
+
+      const activeByThread = new Map<string, QueuedPrompt>();
+      const queuedByThread = new Map<string, QueuedPrompt>();
+      const queueThreadKeys = new Set<string>();
+      for (const item of snapshot.items) {
+        queueThreadKeys.add(item.threadKey);
+        if (["dispatching", "running", "waiting_for_input"].includes(item.status)) {
+          activeByThread.set(item.threadKey, item);
+        } else if (item.status === "queued" && !queuedByThread.has(item.threadKey)) {
+          queuedByThread.set(item.threadKey, item);
+        }
+        if (!item.diff?.hasChanges || !item.runId) continue;
+        const itemId = `${item.runId}-diff`;
+        const diffItem: ThreadItem = {
+          id: itemId,
+          type: "diff",
+          text: item.diff.diff,
+          projectDiff: item.diff,
+          title: "Code changes in this turn"
+        };
+        setItemsForThread(item.threadKey, (current) => current[itemId] ? current : { ...current, [itemId]: diffItem });
+        setItemOrderForThread(item.threadKey, (current) => uniqueAppend(current, itemId));
+        registerTurnItem(item.threadKey, item.runId, itemId);
+      }
+
+      for (const threadKeyValue of queueThreadKeys) {
+        const pending = activeByThread.get(threadKeyValue) || queuedByThread.get(threadKeyValue);
+        reconcileQueuePendingPrompt(threadKeyValue, pending || null);
+      }
+
+      const queueTurns = activeQueueTurns(snapshot);
+      setActiveTurnIdsByThread((current) => {
+        let next = current;
+        for (const [threadKeyValue, runId] of queueTurns) {
+          if (current[threadKeyValue] === runId) continue;
+          if (next === current) next = { ...current };
+          next[threadKeyValue] = runId;
+        }
+        return next;
+      });
+    },
+    [registerTurnItem, setItemOrderForThread, setItemsForThread]
+  );
+
+  const refreshSessionState = useCallback(async (_reason: "connect" | "reconnect" | "manual" | "recover" = "manual") => {
+    const requestId = ++sessionRefreshRequestSeq.current;
+    const selectedKey = selectedThreadIdRef.current;
+    const [, snapshot] = await Promise.all([
+      loadThreads(),
+      call({ type: "queue:list" }) as Promise<QueueSnapshot>
+    ]);
+    if (requestId !== sessionRefreshRequestSeq.current) return;
+    if (snapshot) applyQueueSnapshot(snapshot);
+    if (selectedKey && selectedThreadIdRef.current === selectedKey) {
+      await refreshSelectedThread(selectedKey);
+    }
+  }, [applyQueueSnapshot, call, loadThreads, refreshSelectedThread]);
+
   const showCompletionPopup = useCallback((threadId: string, turn?: Turn) => {
     const popupId = `${threadId}:${turn?.id || Date.now()}`;
-    const userItem = turn?.items?.find((item) => item.type === "userMessage");
-    const title = compactText(userItem ? itemText(userItem) : "", 96) || "Codex task completed";
+    const userItem = turn?.items?.find(isUserMessageItem);
+    const title = compactText(userItem ? itemText(userItem) : "", 96) || "Agent task completed";
     const detail = `Completed ${formatTime(turn?.completedAt || nowSeconds())}`;
 
     setCompletionPopup({ id: popupId, title, detail });
@@ -1764,39 +2141,61 @@ export default function Home() {
   }, []);
 
   const applyNotification = useCallback(
-    (message: { method: string; params?: any }) => {
+    (message: { method: string; params?: any }, eventProvider?: ProviderId) => {
       const params = message.params || {};
-      const tid = typeof params.threadId === "string" ? params.threadId : null;
-      const clearPending = (threadId: string) =>
-        setPendingPromptByThread((current) => {
-          if (!(threadId in current)) return current;
-          const next = { ...current };
-          delete next[threadId];
-          return next;
-        });
+      const provider = (params.provider as ProviderId | undefined) || eventProvider || "codex";
+      const tid = typeof params.threadId === "string" ? threadKey(params.threadId, provider) : null;
+
+      if (message.method === "account/rateLimits/updated") {
+        if (provider === "claude") {
+          const nextRateLimit = standardClaudeRateLimit(params);
+          if (nextRateLimit) setClaudeRateLimit(nextRateLimit);
+          return;
+        }
+        const nextRateLimit = standardCodexRateLimit(params);
+        if (nextRateLimit) setCodexRateLimit(nextRateLimit);
+        return;
+      }
 
       if (message.method === "thread/started" && params.thread) {
-        knownThreadIdsRef.current.add(params.thread.id);
-        dismissedThreadIdsRef.current.delete(params.thread.id);
-        setThreads((current) => [params.thread, ...current.filter((thread) => thread.id !== params.thread.id)]);
+        const thread = normalizeThread({ ...params.thread, provider });
+        knownThreadIdsRef.current.add(threadKey(thread));
+        dismissedThreadIdsRef.current.delete(threadKey(thread));
+        setThreads((current) => mergeThreadsById(current, [thread]));
       }
 
       if (message.method === "thread/archived" && params.threadId) {
-        removeArchivedThread(params.threadId);
+        removeArchivedThread(threadKey(params.threadId, provider));
+      }
+
+      if (
+        (message.method === "thread/closed" || message.method === "thread/deleted") &&
+        params.threadId
+      ) {
+        warmThreadIdsRef.current.delete(threadKey(params.threadId, provider));
       }
 
       if (message.method === "thread/unarchived" && params.thread) {
-        restoreUnarchivedThread(params.thread);
+        restoreUnarchivedThread(normalizeThread({ ...params.thread, provider }));
       } else if (message.method === "thread/unarchived" && params.threadId) {
-        setSessionManagerThreads((current) => current.filter((thread) => thread.id !== params.threadId));
+        setSessionManagerThreads((current) => current.filter((thread) => threadKey(thread) !== threadKey(params.threadId, provider)));
       }
 
       if (message.method === "thread/status/changed") {
-        setThreads((current) =>
-          current.map((thread) => (thread.id === params.threadId ? { ...thread, status: params.status } : thread))
-        );
+        const statusKey = threadKey(params.threadId, provider);
+        setThreads((current) => {
+          let changed = false;
+          const next = current.map((thread) => {
+            if (threadKey(thread) !== statusKey) return thread;
+            if (sameStatusType(thread.status, params.status)) return thread;
+            changed = true;
+            return { ...thread, status: params.status };
+          });
+          return changed ? next : current;
+        });
         setSelectedThread((current) => {
-          if (!current || current.id !== params.threadId) return current;
+          if (!current || threadKey(current) !== statusKey) return current;
+          if (sameStatusType(current.status, params.status)) return current;
           return { ...current, status: params.status };
         });
       }
@@ -1806,215 +2205,61 @@ export default function Home() {
       if (!knownThreadIdsRef.current.has(tid)) return;
 
       if (message.method === "thread/tokenUsage/updated") {
-        setTokenUsageByThread((current) => ({ ...current, [tid]: params }));
-      }
-
-      if (message.method === "turn/started") {
-        const turn = params.turn as Turn | undefined;
-        updateActiveTurn(tid, turn?.id || null);
-        if (turn?.id) {
-          setTurnsForThread(tid, (current) => ({
-            ...current,
-            [turn.id]: {
-              id: turn.id,
-              itemIds: current[turn.id]?.itemIds || [],
-              status: turn.status,
-              startedAt: turn.startedAt,
-              completedAt: turn.completedAt,
-              updatedAt: nowSeconds()
-            }
-          }));
-          setTurnOrderForThread(tid, (current) => uniqueAppend(current, turn.id));
+        if (selectedThreadIdRef.current === tid) {
+          const nextLabel = formatTokenUsage(params);
+          setTokenUsageByThread((current) => (
+            formatTokenUsage(current[tid]) === nextLabel ? current : { ...current, [tid]: params }
+          ));
         }
       }
 
+      if (message.method === "turn/started") {
+        updateActiveTurn(tid, (params.turn as Turn | undefined)?.id || null);
+      }
       if (message.method === "turn/completed") {
+        if (provider === "cursor") refreshCursorUsageRef.current();
         const turn = params.turn as Turn | undefined;
         updateActiveTurn(tid, null, turn?.id);
-        clearPending(tid);
+        const terminalKind = terminalKindForTurn(turn);
+        const terminalStatus = { type: terminalKind };
+        setThreads((current) => current.map((thread) => (
+          threadKey(thread) === tid ? { ...thread, status: terminalStatus } : thread
+        )));
+        setSelectedThread((current) => (
+          current && threadKey(current) === tid ? { ...current, status: terminalStatus } : current
+        ));
         if (turn?.id) {
           const completionKey = `${tid}:${turn.id}`;
           if (!completedTurnNotifications.current.has(completionKey)) {
             completedTurnNotifications.current.add(completionKey);
-            showCompletionPopup(tid, turn);
+            if (terminalKind !== "failed" && selectedThreadIdRef.current !== tid) showCompletionPopup(tid, turn);
           }
-
-          const turnItems = turn.items || [];
-          setItemsForThread(tid, (current) => {
-            const next = { ...current };
-            for (const item of turnItems) next[item.id] = item;
-            return next;
-          });
-          setItemOrderForThread(tid, (current) => {
-            let next = current;
-            for (const item of turnItems) next = uniqueAppend(next, item.id);
-            return next;
-          });
-          setTurnsForThread(tid, (current) => ({
-            ...current,
-            [turn.id]: {
-              id: turn.id,
-              itemIds: uniqueItems(turnItems.map((item) => item.id)),
-              status: turn.status,
-              startedAt: turn.startedAt,
-              completedAt: turn.completedAt,
-              updatedAt: turn.completedAt || nowSeconds()
-            }
-          }));
-          setTurnOrderForThread(tid, (current) => uniqueAppend(current, turn.id));
           loadCompletedTurnDiff(tid, turn.id).catch((error) =>
             setNotice(error instanceof Error ? error.message : String(error))
           );
         }
       }
-
-      if (message.method === "item/started" && params.item) {
-        clearPending(tid);
-        setItemsForThread(tid, (current) => ({ ...current, [params.item.id]: params.item }));
-        setItemOrderForThread(tid, (current) => uniqueAppend(current, params.item.id));
-        registerTurnItem(tid, params.turnId || params.item.turnId, params.item.id);
-      }
-
-      if (message.method === "item/completed" && params.item) {
-        clearPending(tid);
-        setItemsForThread(tid, (current) => ({ ...current, [params.item.id]: params.item }));
-        setItemOrderForThread(tid, (current) => uniqueAppend(current, params.item.id));
-        registerTurnItem(tid, params.turnId || params.item.turnId, params.item.id);
-      }
-
-      if (message.method === "item/agentMessage/delta" || message.method === "item/plan/delta") {
-        startTransition(() => {
-          setItemsForThread(tid, (current) => {
-            const item = current[params.itemId] || { id: params.itemId, type: message.method.includes("plan") ? "plan" : "agentMessage", text: "" };
-            return { ...current, [params.itemId]: { ...item, text: `${item.text || ""}${params.delta || ""}` } };
-          });
-          setItemOrderForThread(tid, (current) => uniqueAppend(current, params.itemId));
-          registerTurnItem(tid, params.turnId, params.itemId);
-        });
-      }
-
-      if (message.method === "item/reasoning/summaryPartAdded") {
-        startTransition(() => {
-          setItemsForThread(tid, (current) => {
-            const item = current[params.itemId] || { id: params.itemId, type: "reasoning", summary: [], content: [] };
-            const summary = [...(item.summary || [])];
-            summary[params.summaryIndex || 0] = summary[params.summaryIndex || 0] || "";
-            return { ...current, [params.itemId]: { ...item, summary } };
-          });
-          setItemOrderForThread(tid, (current) => uniqueAppend(current, params.itemId));
-          registerTurnItem(tid, params.turnId, params.itemId);
-        });
-      }
-
-      if (message.method === "item/reasoning/summaryTextDelta") {
-        startTransition(() => {
-          setItemsForThread(tid, (current) => {
-            const item = current[params.itemId] || { id: params.itemId, type: "reasoning", summary: [], content: [] };
-            const summary = [...(item.summary || [])];
-            summary[params.summaryIndex || 0] = `${summary[params.summaryIndex || 0] || ""}${params.delta || ""}`;
-            return { ...current, [params.itemId]: { ...item, summary } };
-          });
-          setItemOrderForThread(tid, (current) => uniqueAppend(current, params.itemId));
-          registerTurnItem(tid, params.turnId, params.itemId);
-        });
-      }
-
-      if (message.method === "item/reasoning/textDelta") {
-        startTransition(() => {
-          setItemsForThread(tid, (current) => {
-            const item = current[params.itemId] || { id: params.itemId, type: "reasoning", summary: [], content: [] };
-            const content = [...((item.content || []).filter((part): part is string => typeof part === "string"))];
-            content[params.contentIndex || 0] = `${content[params.contentIndex || 0] || ""}${params.delta || ""}`;
-            return { ...current, [params.itemId]: { ...item, content } };
-          });
-          setItemOrderForThread(tid, (current) => uniqueAppend(current, params.itemId));
-          registerTurnItem(tid, params.turnId, params.itemId);
-        });
-      }
-
-      if (message.method === "item/commandExecution/outputDelta") {
-        startTransition(() => {
-          setItemsForThread(tid, (current) => {
-            const item = current[params.itemId] || { id: params.itemId, type: "commandExecution", aggregatedOutput: "" };
-            return {
-              ...current,
-              [params.itemId]: {
-                ...item,
-                aggregatedOutput: `${item.aggregatedOutput || ""}${params.delta || ""}`
-              }
-            };
-          });
-          setItemOrderForThread(tid, (current) => uniqueAppend(current, params.itemId));
-          registerTurnItem(tid, params.turnId, params.itemId);
-        });
-      }
-
-      if (message.method === "item/fileChange/outputDelta") {
-        startTransition(() => {
-          setItemsForThread(tid, (current) => {
-            const item = current[params.itemId] || { id: params.itemId, type: "fileChange", output: "" };
-            return { ...current, [params.itemId]: { ...item, output: `${item.output || ""}${params.delta || ""}` } };
-          });
-          setItemOrderForThread(tid, (current) => uniqueAppend(current, params.itemId));
-          registerTurnItem(tid, params.turnId, params.itemId);
-        });
-      }
-
-      if (message.method === "item/fileChange/patchUpdated") {
-        setItemsForThread(tid, (current) => {
-          const item = current[params.itemId] || { id: params.itemId, type: "fileChange" };
-          return { ...current, [params.itemId]: { ...item, changes: params.changes || [] } };
-        });
-        setItemOrderForThread(tid, (current) => uniqueAppend(current, params.itemId));
-        registerTurnItem(tid, params.turnId, params.itemId);
-      }
-
-      if (message.method === "turn/diff/updated") {
-        const itemId = `${params.turnId}-diff`;
-        startTransition(() => {
-          setItemsForThread(tid, (current) => ({
-            ...current,
-            [itemId]: { id: itemId, type: "diff", text: params.diff || "" }
-          }));
-          setItemOrderForThread(tid, (current) => uniqueAppend(current, itemId));
-          registerTurnItem(tid, params.turnId, itemId);
-        });
-      }
-
-      if (message.method === "turn/plan/updated") {
-        const itemId = `${params.turnId}-plan`;
-        const explanation = params.explanation ? `${params.explanation}\n\n` : "";
-        const planEntries = Array.isArray(params.plan)
-          ? params.plan.map((step: any) => ({
-              status: String(step.status || "pending"),
-              step: String(step.step || "")
-            }))
-          : [];
-        const plan = planEntries.length
-          ? planEntries.map((step: { step: string; status: string }) => `- ${step.status}: ${step.step}`).join("\n")
-          : "";
-        startTransition(() => {
-          setItemsForThread(tid, (current) => ({
-            ...current,
-            [itemId]: {
-              id: itemId,
-              type: "plan",
-              text: `${explanation}${plan}`.trim(),
-              explanation: String(params.explanation || ""),
-              planEntries
-            }
-          }));
-          setItemOrderForThread(tid, (current) => uniqueAppend(current, itemId));
-          registerTurnItem(tid, params.turnId, itemId);
-        });
-      }
+      applyTranscriptNotification(tid, message);
     },
-    [loadCompletedTurnDiff, registerTurnItem, setItemOrderForThread, setItemsForThread, setTurnOrderForThread, setTurnsForThread, showCompletionPopup, updateActiveTurn]
+    [loadCompletedTurnDiff, showCompletionPopup, updateActiveTurn]
   );
 
   useEffect(() => {
-    selectedThreadIdRef.current = selectedThread?.id || null;
-  }, [selectedThread?.id]);
+    selectedThreadIdRef.current = threadKey(selectedThread) || null;
+    if (selectedThread) selectProviderPreference(providerOf(selectedThread));
+  }, [selectedThread]);
+
+  useEffect(() => {
+    if (!pendingLiveThreadKeys.length) return;
+    const covered = new Set<string>();
+    for (const key of queueSummaryByThread.keys()) covered.add(key);
+    for (const [key, turnId] of Object.entries(activeTurnIdsByThread)) {
+      if (turnId) covered.add(key);
+    }
+    const next = pendingLiveThreadKeys.filter((key) => !covered.has(key));
+    if (next.length === pendingLiveThreadKeys.length) return;
+    setPendingLiveThreadKeys(next);
+  }, [activeTurnIdsByThread, pendingLiveThreadKeys, queueSummaryByThread]);
 
   useEffect(
     () => () => {
@@ -2025,29 +2270,58 @@ export default function Home() {
 
   useEffect(() => {
     const next = new Set<string>();
-    for (const thread of threads) next.add(thread.id);
-    if (selectedThread?.id) next.add(selectedThread.id);
-    for (const id of Object.keys(queuedPromptsByThread)) next.add(id);
+    for (const thread of threads) next.add(threadKey(thread));
+    if (selectedThread) next.add(threadKey(selectedThread));
+    for (const item of queueSnapshot.items) next.add(item.threadKey);
     knownThreadIdsRef.current = next;
-  }, [queuedPromptsByThread, selectedThread?.id, threads]);
+  }, [queueSnapshot.items, selectedThread?.id, threads]);
 
     useEffect(() => {
-      const saved = window.localStorage.getItem("codex-remote-console.cwd");
+      const savedProvider = window.localStorage.getItem(storageKey("provider"));
+      if (isAgentProviderId(savedProvider)) setSelectedProvider(savedProvider);
+      const saved = window.localStorage.getItem(storageKey("cwd"));
       if (saved) setCwd(saved);
-    const recent = window.localStorage.getItem("codex-remote-console.recentDirs");
-    if (recent) setRecentDirs(JSON.parse(recent));
-    const pinned = window.localStorage.getItem("codex-remote-console.pinnedDirs");
-    if (pinned) setPinnedDirs(JSON.parse(pinned));
-    const collapsed = window.localStorage.getItem("codex-remote-console.collapsedThreadGroups");
-    if (collapsed) setCollapsedThreadGroups(JSON.parse(collapsed));
+    const recent = readStoredJson<string[]>(window.localStorage.getItem(storageKey("recentDirs")), []);
+    if (Array.isArray(recent)) setRecentDirs(recent.filter((item): item is string => typeof item === "string"));
+    const pinned = readStoredJson<string[]>(window.localStorage.getItem(storageKey("pinnedDirs")), []);
+    if (Array.isArray(pinned)) setPinnedDirs(pinned.filter((item): item is string => typeof item === "string"));
+    const pinnedThreads = window.localStorage.getItem(pinnedThreadsStorageKey);
+    if (pinnedThreads) {
+      try {
+        const parsed = JSON.parse(pinnedThreads);
+        if (Array.isArray(parsed)) setPinnedThreadKeys(parsed.filter((item): item is string => typeof item === "string"));
+      } catch {
+        // Ignore malformed local UI preferences.
+      }
+    }
+    const collapsed = readStoredJson<string[]>(window.localStorage.getItem(storageKey("collapsedThreadGroups")), []);
+    if (Array.isArray(collapsed)) setCollapsedThreadGroups(collapsed.filter((item): item is string => typeof item === "string"));
     const savedThreadLayout = window.localStorage.getItem(threadLayoutStorageKey);
     if (savedThreadLayout === "directories" || savedThreadLayout === "recent") setThreadLayout(savedThreadLayout);
-    const savedSidebarCollapsed = window.localStorage.getItem("codex-remote-console.sidebarCollapsed");
+    const savedSidebarCollapsed = window.localStorage.getItem(storageKey("sidebarCollapsed"));
     if (savedSidebarCollapsed === "true") setSidebarCollapsed(true);
     const savedSidebarWidth = Number(window.localStorage.getItem(sidebarWidthStorageKey));
-    if (Number.isFinite(savedSidebarWidth)) setSidebarWidth(clampSidebarWidth(savedSidebarWidth));
-    const promptQueue = window.localStorage.getItem(promptQueueStorageKey);
-      if (promptQueue) setQueuedPromptsByThread(JSON.parse(promptQueue));
+    if (Number.isFinite(savedSidebarWidth) && savedSidebarWidth > 0) setSidebarWidth(clampSidebarWidth(savedSidebarWidth));
+    const savedContextWidth = Number(window.localStorage.getItem(contextWidthStorageKey));
+    if (Number.isFinite(savedContextWidth) && savedContextWidth > 0) {
+      const migrated = savedContextWidth === 360 || savedContextWidth === 300 ? defaultContextWidth : savedContextWidth;
+      setContextWidth(clampContextWidth(migrated));
+    }
+      for (const provider of providerOrder) {
+        const savedRuntime = window.localStorage.getItem(storageKey(runtimeStorageKey(provider)));
+        if (!savedRuntime) continue;
+        try {
+          const parsed = JSON.parse(savedRuntime) as Partial<SessionRuntimeSettings>;
+          const restored = restoreProviderRuntimeSettings(provider, parsed);
+          window.localStorage.setItem(storageKey(runtimeStorageKey(provider)), JSON.stringify(restored));
+          setRuntimeSettingsByProvider((current) => ({
+            ...current,
+            [provider]: restored
+          }));
+        } catch {
+          // Ignore malformed local UI preferences.
+        }
+      }
   
       bootstrapPromise
         ?.then((nextBootstrap: Bootstrap) => {
@@ -2059,7 +2333,7 @@ export default function Home() {
         );
     }, []);
 
-    const wsAllowed = bootstrap === null || bootstrap.authenticated === true;
+    const wsAllowed = bootstrap?.authenticated === true;
     useEffect(() => {
       if (!wsAllowed) return;
 
@@ -2067,14 +2341,12 @@ export default function Home() {
       let retry: number | null = null;
 
     function rejectPending(error: Error) {
-      for (const pending of pendingReplies.current.values()) pending.reject(error);
+      for (const pending of pendingReplies.current.values()) {
+        window.clearTimeout(pending.timeout);
+        pending.reject(error);
+      }
       pendingReplies.current.clear();
     }
-
-      function refreshLiveState() {
-        loadThreads().catch((error) => setNotice(error.message));
-        refreshSelectedThread().catch((error) => setNotice(error.message));
-      }
 
       function handleGatewayEvent(message: any) {
         if (message.type === "reply") {
@@ -2082,8 +2354,14 @@ export default function Home() {
           const pending = pendingReplies.current.get(reply.requestId);
           if (!pending) return;
           pendingReplies.current.delete(reply.requestId);
+          window.clearTimeout(pending.timeout);
           if (reply.ok) pending.resolve(reply.result);
           else pending.reject(new Error(reply.error || "Request failed."));
+          return;
+        }
+
+        if (message.type === "queue:snapshot") {
+          applyQueueSnapshot(message.snapshot);
           return;
         }
 
@@ -2092,29 +2370,76 @@ export default function Home() {
             current ? { ...current, codex: message.snapshot, codexError: null } : current
           );
           setPendingRequests(message.snapshot?.pendingServerRequests || []);
+          setGatewayDiagnostic(message.snapshot?.diagnostic || null);
+          return;
+        }
+
+        if (message.type === "agent:snapshot" && message.providers) {
+          setBootstrap((current) => current ? { ...current, providers: message.providers } : current);
+          return;
+        }
+
+        if (message.type === "gateway:diagnostic") {
+          setGatewayDiagnostic(message.diagnostic || null);
+          if (message.diagnostic?.detail) setNotice(`${message.diagnostic.title}. ${message.diagnostic.detail}`);
           return;
         }
 
         if (message.type === "gateway:state") {
-          setWsState(message.status === "connected" ? "online" : message.status);
+          setBootstrap((current) => {
+            if (!current) return current;
+            const codexStatus = current.providers?.codex || {};
+            const available = message.status === "connected";
+            return {
+              ...current,
+              providers: {
+                ...(current.providers || {}),
+                codex: {
+                  ...codexStatus,
+                  available,
+                  availability: available ? "available" : "unavailable",
+                  status: message.status,
+                  diagnostic: message.detail || null
+                }
+              }
+            };
+          });
           if (message.detail) setNotice(message.detail);
           return;
         }
 
         if (message.type === "codex:notification") {
-          applyNotification(message.message);
+          applyNotification(message.message, "codex");
           return;
         }
 
-        if (message.type === "codex:serverRequest") {
+        if (message.type === "agent:event") {
+          const provider = isAgentProviderId(message.provider) ? message.provider : "codex";
+          const notification = provider === "codex"
+            ? message.message || message.event
+            : cursorEventToNotification(message, provider);
+          if (provider !== "codex" && message.event === "error" && message.message) {
+            setNotice(`${providerName(provider)}: ${message.message}`);
+          }
+          if (notification) applyNotification(notification, provider);
+          if (provider !== "codex" && message.event === "status" && message.sessionId && message.status) {
+            applyNotification({
+              method: "thread/status/changed",
+              params: { provider, threadId: message.sessionId, status: message.status }
+            }, provider);
+          }
+          return;
+        }
+
+        if (message.type === "codex:serverRequest" || message.type === "agent:serverRequest") {
           setPendingRequests((current) => [
             ...current.filter((request) => request.id !== message.request.id),
-            message.request
+            { ...message.request, params: { ...(message.request.params || {}), provider: message.provider || "codex" } }
           ]);
           return;
         }
 
-        if (message.type === "codex:serverRequestResolved") {
+        if (message.type === "codex:serverRequestResolved" || message.type === "agent:serverRequestResolved") {
           setPendingRequests((current) => current.filter((request) => request.id !== message.requestId));
         }
       }
@@ -2131,9 +2456,10 @@ export default function Home() {
 
         ws.onopen = () => {
           if (ws !== wsRef.current) return;
+          const reconnecting = reconnectAttempt.current > 0;
           reconnectAttempt.current = 0;
           setWsState("online");
-          refreshLiveState();
+          refreshSessionState(reconnecting ? "reconnect" : "connect").catch((error) => setNotice(error.message));
         };
         ws.onerror = () => {
           if (ws === wsRef.current) setWsState("error");
@@ -2150,7 +2476,11 @@ export default function Home() {
         };
         ws.onmessage = (event) => {
           if (ws !== wsRef.current) return;
-          handleGatewayEvent(JSON.parse(event.data));
+          try {
+            handleGatewayEvent(JSON.parse(event.data));
+          } catch {
+            // Ignore malformed gateway frames.
+          }
         };
       }
 
@@ -2167,8 +2497,8 @@ export default function Home() {
 
       function handleVisibilityChange() {
         if (document.visibilityState !== "visible") return;
-        if (wsRef.current?.readyState === WebSocket.OPEN) refreshLiveState();
-        else reconnectNow();
+        if (wsRef.current?.readyState === WebSocket.OPEN) return;
+        reconnectNow();
       }
 
       function handleOnline() {
@@ -2188,12 +2518,118 @@ export default function Home() {
         window.removeEventListener("focus", handleOnline);
         wsRef.current?.close();
       };
-    }, [applyNotification, wsAllowed, loadThreads, refreshSelectedThread]);
+    }, [applyNotification, applyQueueSnapshot, refreshSessionState, wsAllowed]);
 
   useEffect(() => {
     if (wsState !== "online") return;
-    loadThreads().catch((error) => setNotice(error.message));
-  }, [loadThreads, wsState]);
+    codex("account/rateLimits/read")
+      .then((response) => {
+        const nextRateLimit = standardCodexRateLimit(response);
+        if (nextRateLimit) setCodexRateLimit(nextRateLimit);
+      })
+      .catch(() => undefined);
+    agent("codex", "thread/loaded/list", {})
+      .then((response) => {
+        const ids = Array.isArray(response?.data) ? response.data : [];
+        warmThreadIdsRef.current = new Set(
+          ids
+            .filter((id: unknown): id is string => typeof id === "string")
+            .map((id: string) => threadKey(id, "codex"))
+        );
+      })
+      .catch(() => undefined);
+  }, [agent, codex, loadThreads, wsState]);
+
+  useEffect(() => {
+    const nextRateLimit = standardClaudeRateLimit(bootstrap?.providers?.claude?.rateLimit);
+    if (nextRateLimit) setClaudeRateLimit(nextRateLimit);
+    const nextCursorUsage = parseCursorUsage(bootstrap?.providers?.cursor?.rateLimit);
+    if (nextCursorUsage) setCursorUsage(nextCursorUsage);
+  }, [bootstrap]);
+
+  const refreshCursorUsage = useCallback(() => {
+    agent("cursor", "account/usage/read", {})
+      .then((response) => {
+        const next = parseCursorUsage(response);
+        if (next) setCursorUsage(next);
+      })
+      .catch(() => undefined);
+  }, [agent]);
+  const refreshCursorUsageRef = useRef(refreshCursorUsage);
+  refreshCursorUsageRef.current = refreshCursorUsage;
+
+  useEffect(() => {
+    if (wsState !== "online") return;
+    refreshCursorUsage();
+    if (selectedProvider !== "cursor") return;
+    const timer = window.setInterval(refreshCursorUsage, 60_000);
+    return () => window.clearInterval(timer);
+  }, [refreshCursorUsage, selectedProvider, wsState]);
+
+  useEffect(() => {
+    if (wsState !== "online" || legacyQueueMigrationRunning.current) return;
+    const raw = window.localStorage.getItem(promptQueueStorageKey);
+    if (!raw) return;
+
+    let legacy: Record<string, Array<{ id?: string; threadId?: string; text?: string; createdAt?: number }>>;
+    try {
+      legacy = JSON.parse(raw);
+    } catch {
+      setNotice("The legacy browser queue could not be parsed; it was left unchanged.", "warning");
+      return;
+    }
+
+    legacyQueueMigrationRunning.current = true;
+    void (async () => {
+      const remaining = { ...legacy };
+      for (const [legacyThreadKey, entries] of Object.entries(legacy)) {
+        const thread = threadByKey.get(legacyThreadKey);
+        if (!thread || !Array.isArray(entries)) continue;
+        const provider = providerOf(thread);
+        const runtime = runtimeSettingsByProvider[provider] || providerRuntimeDefaults(provider);
+        const unimported = [...entries];
+        for (const entry of entries) {
+          if (!entry.text?.trim()) {
+            unimported.shift();
+            continue;
+          }
+          const item = {
+            id: entry.id || queueId(),
+            provider,
+            threadKey: legacyThreadKey,
+            threadId: nativeThreadId(thread),
+            text: entry.text,
+            cwd: thread.cwd,
+            threadParams: runtimeThreadParams(runtime),
+            turnParams: {
+              ...runtimeTurnParams(runtime),
+              ...(provider === "codex"
+                ? { collaborationMode: buildCollaborationMode(runtime, bootstrap?.codex?.collaborationModes || [], runtime.model, runtime.mode) }
+                : {})
+            },
+            createdAt: entry.createdAt || nowSeconds()
+          };
+          try {
+            const response = await call({ type: "queue:enqueue", item });
+            if (response?.snapshot) applyQueueSnapshot(response.snapshot);
+            unimported.shift();
+          } catch {
+            break;
+          }
+        }
+        if (unimported.length) remaining[legacyThreadKey] = unimported;
+        else delete remaining[legacyThreadKey];
+      }
+
+      if (Object.keys(remaining).length) {
+        window.localStorage.setItem(promptQueueStorageKey, JSON.stringify(remaining));
+      } else {
+        window.localStorage.removeItem(promptQueueStorageKey);
+      }
+    })().finally(() => {
+      legacyQueueMigrationRunning.current = false;
+    });
+  }, [applyQueueSnapshot, bootstrap?.codex?.collaborationModes, call, runtimeSettingsByProvider, threadByKey, wsState]);
 
   useEffect(() => {
     if (!sessionManagerOpen) return;
@@ -2202,29 +2638,25 @@ export default function Home() {
   }, [loadSessionManagerPage, sessionManagerOpen]);
 
   useEffect(() => {
-    if (!slashOpen) return;
-    setSlashIndex(0);
-  }, [prompt, slashOpen]);
-
-  useEffect(() => {
-    if (!slashMatches.length || slashIndex < slashMatches.length) return;
-    setSlashIndex(slashMatches.length - 1);
-  }, [slashIndex, slashMatches.length]);
-
-  useEffect(() => {
     if (wsState !== "online" || runtimeInitialized.current) return;
     runtimeInitialized.current = true;
     codex("config/read", { includeLayers: false, cwd: selectedRoot(selectedThread, project, cwd) || null })
       .then((response) => {
         const config = response?.config || {};
-        setRuntimeSettings((current) => ({
-          ...current,
-          model: current.model || config.model || "",
-          reasoningEffort: current.reasoningEffort ?? config.model_reasoning_effort ?? null,
-          serviceTier: current.serviceTier ?? config.service_tier ?? null,
-          approvalPolicy: current.approvalPolicy ?? config.approval_policy ?? null,
-          sandboxMode: current.sandboxMode ?? config.sandbox_mode ?? null
-        }));
+        setRuntimeSettingsByProvider((current) => {
+          const old = current.codex || providerRuntimeDefaults("codex");
+          return {
+            ...current,
+            codex: {
+              ...old,
+              model: old.model || config.model || "",
+              reasoningEffort: old.reasoningEffort ?? config.model_reasoning_effort ?? null,
+              serviceTier: old.serviceTier ?? config.service_tier ?? null,
+              approvalPolicy: old.approvalPolicy ?? config.approval_policy ?? null,
+              sandboxMode: old.sandboxMode ?? config.sandbox_mode ?? null
+            }
+          };
+        });
       })
       .catch(() => undefined);
   }, [codex, cwd, project, selectedThread, wsState]);
@@ -2254,64 +2686,92 @@ export default function Home() {
   }, [codex, commandPanel, cwd, mentionQuery, project, selectedThread]);
 
   useEffect(() => {
-    if (failedQueuedPromptId.current && failedQueuedPromptId.current !== nextQueuedPrompt?.id) {
-      failedQueuedPromptId.current = null;
-    }
-  }, [nextQueuedPrompt?.id]);
+    setFileContexts([]);
+    setFileContextHighlight(null);
+    setFileMentions([]);
+    setAtQuery(null);
+  }, [workspaceRoot]);
 
   useEffect(() => {
-    if (!selectedThread || activeTurnId || wsState !== "online" || !nextQueuedPrompt) return;
-    if (drainingQueuedPromptId.current || failedQueuedPromptId.current === nextQueuedPrompt.id) return;
-
-    const threadId = selectedThread.id;
-    const queuedPrompt = nextQueuedPrompt;
-    drainingQueuedPromptId.current = queuedPrompt.id;
-    setPendingPrompt(queuedPrompt.text);
-
-    startTurn(threadId, queuedPrompt.text)
-      .then(() => removeQueuedPrompt(threadId, queuedPrompt.id))
-      .catch((error) => {
-        setPendingPrompt("");
-        failedQueuedPromptId.current = queuedPrompt.id;
-        setNotice(error instanceof Error ? error.message : String(error));
-      })
-      .finally(() => {
-        if (drainingQueuedPromptId.current === queuedPrompt.id) drainingQueuedPromptId.current = null;
-      });
-  }, [activeTurnId, nextQueuedPrompt, selectedThread, wsState]);
+    if (atQuery === null) {
+      setFileMentions([]);
+      return;
+    }
+    const root = workspaceRoot;
+    if (!root) {
+      setFileMentions([]);
+      return;
+    }
+    const query = atQuery.trim();
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      const applyHits = (hits: FileMentionHit[]) => {
+        if (!cancelled) setFileMentions(hits);
+      };
+      if (selectedProvider === "codex" && query) {
+        void codex("fuzzyFileSearch", {
+          query,
+          roots: [root],
+          cancellationToken: null
+        }).then((response) => {
+          const files = Array.isArray(response?.files) ? response.files : [];
+          applyHits(
+            files.slice(0, 20).map((item: { path?: string; file_name?: string }) => ({
+              path: String(item.path || item.file_name || ""),
+              name: String(item.file_name || item.path || "").split("/").pop() || ""
+            })).filter((item: FileMentionHit) => item.path && isMentionablePath(item.path))
+          );
+        }).catch(() => {
+          void searchProjectFiles(root, query).then(applyHits);
+        });
+        return;
+      }
+      void searchProjectFiles(root, query).then(applyHits);
+    }, 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [atQuery, codex, selectedProvider, workspaceRoot]);
 
   useEffect(() => {
     if (wsState !== "online") return;
     for (const thread of threads) {
-      if (thread.name) continue;
-      if (autoNamedThreadIds.current.has(thread.id)) continue;
-      if (activeTurnIdsByThread[thread.id]) continue;
-      const orderForThread = itemOrderByThread[thread.id];
-      const itemsForThread = itemsByThread[thread.id];
+      if (!isUntitledThread(thread)) continue;
+      const key = threadKey(thread);
+      if (autoNamedThreadIds.current.has(key)) continue;
+      if (activeTurnIdsByThread[key]) continue;
+      const view = getThreadViewState();
+      const orderForThread = view.itemOrderByThread[key];
+      const itemsForThread = view.itemsByThread[key];
       if (!orderForThread || !itemsForThread || orderForThread.length < 2) continue;
-      const firstUserItem = orderForThread.map((id) => itemsForThread[id]).find((item) => item?.type === "userMessage");
+      const firstUserItem = orderForThread.map((id) => itemsForThread[id]).find((item) => item && isUserMessageItem(item));
       if (!firstUserItem) continue;
       const text = userMessageParts(firstUserItem).text.replace(/\s+/g, " ").trim();
       if (!text) continue;
-      const segment = text.split(/[.?!\n。？！]/)[0] || text;
-      const title = segment.slice(0, 28).trim();
-      if (!title) continue;
-      autoNamedThreadIds.current.add(thread.id);
-      const threadId = thread.id;
-      codex("thread/name/set", { threadId, name: title })
-        .then(() => {
+      const fallbackTitle = fallbackTitleFromUserText(text);
+      if (!fallbackTitle) continue;
+      const threadId = threadKey(thread);
+      const provider = providerOf(thread);
+      autoNamedThreadIds.current.add(threadId);
+
+      const applyTitle = (title: string) =>
+        agent(provider, "thread/name/set", { threadId: nativeThreadId(thread), name: title, provider }).then(() => {
           setThreads((current) =>
-            current.map((candidate) => (candidate.id === threadId ? { ...candidate, name: title } : candidate))
+            current.map((candidate) => (threadKey(candidate) === threadId ? { ...candidate, name: title } : candidate))
           );
           setSelectedThread((current) =>
-            current && current.id === threadId ? { ...current, name: title } : current
+            current && threadKey(current) === threadId ? { ...current, name: title } : current
           );
-        })
-        .catch(() => {
-          autoNamedThreadIds.current.delete(threadId);
         });
+
+      const naming = applyTitle(fallbackTitle);
+
+      naming.catch(() => {
+        autoNamedThreadIds.current.delete(threadId);
+      });
     }
-  }, [activeTurnIdsByThread, codex, itemOrderByThread, itemsByThread, threads, wsState]);
+  }, [activeTurnIdsByThread, agent, threads, wsState]);
 
   async function login(event: FormEvent) {
     event.preventDefault();
@@ -2338,7 +2798,7 @@ export default function Home() {
   function rememberDirectory(path: string) {
     const next = [path, ...recentDirs.filter((item) => item !== path)].slice(0, 8);
     setRecentDirs(next);
-    window.localStorage.setItem("codex-remote-console.recentDirs", JSON.stringify(next));
+    window.localStorage.setItem(storageKey("recentDirs"), JSON.stringify(next));
   }
 
   function togglePinnedDirectory(path: string) {
@@ -2348,7 +2808,32 @@ export default function Home() {
       const next = current.some((item) => normalizeDirectoryPath(item) === target)
         ? current.filter((item) => normalizeDirectoryPath(item) !== target)
         : [target, ...current.filter((item) => normalizeDirectoryPath(item) !== target)].slice(0, 12);
-      window.localStorage.setItem("codex-remote-console.pinnedDirs", JSON.stringify(next));
+      window.localStorage.setItem(storageKey("pinnedDirs"), JSON.stringify(next));
+      return next;
+    });
+  }
+
+  const togglePinnedThread = useCallback((key: string) => {
+    setPinnedThreadKeys((current) => {
+      const next = current.includes(key) ? current.filter((item) => item !== key) : [...current, key];
+      try {
+        window.localStorage.setItem(pinnedThreadsStorageKey, JSON.stringify(next));
+      } catch {
+        // The UI still works when browser storage is unavailable.
+      }
+      return next;
+    });
+  }, []);
+
+  function removePinnedThread(key: string) {
+    setPinnedThreadKeys((current) => {
+      if (!current.includes(key)) return current;
+      const next = current.filter((item) => item !== key);
+      try {
+        window.localStorage.setItem(pinnedThreadsStorageKey, JSON.stringify(next));
+      } catch {
+        // The UI still works when browser storage is unavailable.
+      }
       return next;
     });
   }
@@ -2366,7 +2851,7 @@ export default function Home() {
       const filtered = current.filter((item) => normalizeDirectoryPath(item) !== sourceNorm);
       const targetIndex = filtered.findIndex((item) => normalizeDirectoryPath(item) === targetNorm);
       const next = [...filtered.slice(0, targetIndex), sourceNorm, ...filtered.slice(targetIndex)];
-      window.localStorage.setItem("codex-remote-console.pinnedDirs", JSON.stringify(next));
+      window.localStorage.setItem(storageKey("pinnedDirs"), JSON.stringify(next));
       return next;
     });
   }
@@ -2383,7 +2868,7 @@ export default function Home() {
   function toggleThreadGroup(cwd: string) {
     setCollapsedThreadGroups((current) => {
       const next = current.includes(cwd) ? current.filter((item) => item !== cwd) : [...current, cwd];
-      window.localStorage.setItem("codex-remote-console.collapsedThreadGroups", JSON.stringify(next));
+      window.localStorage.setItem(storageKey("collapsedThreadGroups"), JSON.stringify(next));
       return next;
     });
   }
@@ -2395,7 +2880,7 @@ export default function Home() {
 
   function setSidebarCollapsedValue(next: boolean) {
     setSidebarCollapsed(next);
-    window.localStorage.setItem("codex-remote-console.sidebarCollapsed", String(next));
+    window.localStorage.setItem(storageKey("sidebarCollapsed"), String(next));
   }
 
   function setSidebarWidthValue(width: number) {
@@ -2428,6 +2913,38 @@ export default function Home() {
     window.addEventListener("pointercancel", stopResize);
   }
 
+  function startContextResize(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = contextWidth;
+    let nextWidth = startWidth;
+    setContextResizing(true);
+    document.body.classList.add("contextResizing");
+
+    const resize = (moveEvent: PointerEvent) => {
+      nextWidth = clampContextWidth(startWidth + startX - moveEvent.clientX);
+      appShellRef.current?.style.setProperty("--context-width", `${nextWidth}px`);
+    };
+    const stopResize = () => {
+      setContextWidth(nextWidth);
+      try {
+        window.localStorage.setItem(contextWidthStorageKey, String(nextWidth));
+      } catch {
+        // The UI still works when browser storage is unavailable.
+      }
+      setContextResizing(false);
+      document.body.classList.remove("contextResizing");
+      window.removeEventListener("pointermove", resize);
+      window.removeEventListener("pointerup", stopResize);
+      window.removeEventListener("pointercancel", stopResize);
+    };
+
+    window.addEventListener("pointermove", resize);
+    window.addEventListener("pointerup", stopResize);
+    window.addEventListener("pointercancel", stopResize);
+  }
+
   function openSessionManager() {
     setMobilePanel(null);
     setSessionManagerOpen(true);
@@ -2445,10 +2962,11 @@ export default function Home() {
       return;
     }
 
-    setSessionManagerBusy(thread.id);
+    const key = threadKey(thread);
+    setSessionManagerBusy(key);
     try {
-      await codex("thread/archive", { threadId: thread.id });
-      removeArchivedThread(thread.id);
+      await agent(providerOf(thread), "thread/archive", { threadId: nativeThreadId(thread), provider: providerOf(thread) });
+      removeArchivedThread(key);
       setNotice("Session archived.");
     } finally {
       setSessionManagerBusy(null);
@@ -2466,8 +2984,8 @@ export default function Home() {
     setSessionManagerBusy(`group:${group.cwd}`);
     try {
       for (const thread of archivable) {
-        await codex("thread/archive", { threadId: thread.id });
-        removeArchivedThread(thread.id);
+        await agent(providerOf(thread), "thread/archive", { threadId: nativeThreadId(thread), provider: providerOf(thread) });
+        removeArchivedThread(threadKey(thread));
       }
       setNotice(`Archived ${archivable.length} sessions${skipped ? `, skipped ${skipped} active.` : "."}`);
     } finally {
@@ -2476,10 +2994,10 @@ export default function Home() {
   }
 
   async function restoreManagedThread(thread: Thread) {
-    setSessionManagerBusy(thread.id);
+    setSessionManagerBusy(threadKey(thread));
     try {
-      const response = await codex("thread/unarchive", { threadId: thread.id });
-      const restored = (response.thread || thread) as Thread;
+      const response = await agent(providerOf(thread), "thread/unarchive", { threadId: nativeThreadId(thread), provider: providerOf(thread) });
+      const restored = normalizeThread({ ...((response.thread || thread) as Thread), provider: providerOf(thread) });
       restoreUnarchivedThread(restored);
       setNotice("Session restored.");
       return restored;
@@ -2494,97 +3012,195 @@ export default function Home() {
     setSessionManagerOpen(false);
   }
 
+  function applyResolvedDirectory(result: ProjectInfo) {
+    setProject(result);
+    setCwd(result.realpath);
+    window.localStorage.setItem(storageKey("cwd"), result.realpath);
+    rememberDirectory(result.realpath);
+  }
+
   async function resolveCwdValue(value: string) {
     setProjectError("");
     try {
       const result = await getJson<ProjectInfo>(`/api/projects/resolve?cwd=${encodeURIComponent(value)}`);
-      setProject(result);
-      setCwd(result.realpath);
-      window.localStorage.setItem("codex-remote-console.cwd", result.realpath);
-      rememberDirectory(result.realpath);
+      applyResolvedDirectory(result);
       return result;
     } catch (error) {
       setProject(null);
-      setProjectError(error instanceof Error ? error.message : String(error));
+      setProjectError(directoryErrorMessage(error));
       throw error;
     }
   }
 
-  async function resolveCwd() {
-    await resolveCwdValue(cwd).catch(() => undefined);
-  }
+  useEffect(() => {
+    if (!bootstrap?.authenticated || !cwd.trim() || restoredCwdResolved.current) return;
+    restoredCwdResolved.current = true;
+    resolveCwdValue(cwd).catch(() => undefined);
+  }, [bootstrap?.authenticated, cwd]);
 
   async function useDirectory(path: string) {
+    const resolved = await resolveCwdValue(path).catch(() => null);
+    if (!resolved) return;
     setDirectoryPickerOpen(false);
     setMobilePanel(null);
-    await resolveCwdValue(path).catch(() => undefined);
   }
 
-  async function startThread(initialPrompt?: string, initialAttachments: Attachment[] = []) {
-    const resolved = await resolveCwdValue(cwd);
-    const threadResponse = await codex("thread/start", {
-      cwd: resolved.realpath,
-      ...runtimeThreadParams(runtimeSettings)
-    });
-    const thread = threadResponse.thread as Thread;
-    knownThreadIdsRef.current.add(thread.id);
-    dismissedThreadIdsRef.current.delete(thread.id);
-    selectedThreadIdRef.current = thread.id;
-    setSelectedThread(thread);
-    updateActiveTurn(thread.id, activeTurnIdFromTurns(thread.turns || []));
-    if (!initialPrompt) setPendingPromptByThread((current) => ({ ...current, [thread.id]: "" }));
-    applyItemsFromTurns(thread.id, thread.turns || []);
+  function useResolvedDirectory(result: ProjectInfo) {
+    setProjectError("");
+    applyResolvedDirectory(result);
+    setDirectoryPickerOpen(false);
     setMobilePanel(null);
-    setThreads((current) => [thread, ...current.filter((item) => item.id !== thread.id)]);
+  }
 
-    updateRuntimeSettings((current) => ({
-      model: threadResponse.model || current.model,
-      reasoningEffort: threadResponse.reasoningEffort ?? current.reasoningEffort,
-      serviceTier: current.serviceTier ?? threadResponse.serviceTier ?? null,
-      approvalPolicy: threadResponse.approvalPolicy ?? current.approvalPolicy
-    }));
+  function beginDraftSession() {
+    selectedThreadIdRef.current = null;
+    setSelectedThread(null);
+    setWorkspaceView("chat");
+    setMobilePanel(null);
+    window.setTimeout(() => composerRef.current?.focus(), 0);
+  }
 
-    if (initialPrompt || initialAttachments.length) {
-      await sendToThread(thread.id, initialPrompt || "", threadResponse.model || "", initialAttachments);
-    } else {
-      window.setTimeout(() => promptRef.current?.focus(), 0);
+  async function startThread(
+    initialPrompt?: string,
+    initialAttachments: Attachment[] = [],
+    options: { cwd?: string; runtime?: SessionRuntimeSettings; provider?: ProviderId } = {}
+  ) {
+    const provider = options.provider || selectedProvider;
+    const status = provider === selectedProvider ? currentProviderStatus : providerStatus(bootstrap, provider);
+    if (sessionCreatingRef.current) return;
+    if (!providerAvailable(status)) {
+      setNotice(`${providerName(provider)} is not available on this server.`);
+      return;
+    }
+    if (provider !== selectedProvider) selectProviderPreference(provider);
+    const threadRuntime = options.runtime || runtimeSettingsByProvider[provider] || providerRuntimeDefaults(provider);
+    sessionCreatingRef.current = true;
+    setSessionCreating(true);
+    try {
+      const resolved = await resolveCwdValue(options.cwd || cwd);
+      const threadResponse = await agent(provider, "thread/start", {
+        cwd: resolved.realpath,
+        provider,
+        ...runtimeThreadParams(threadRuntime)
+      });
+      const created = normalizeThread({ ...(threadResponse.thread as Thread), provider });
+      const titled = initialPrompt ? withImmediateTitle(created, initialPrompt) : created;
+      const key = threadKey(titled);
+      setModeOverrideByThread((current) => ({ ...current, [key]: threadRuntime.mode }));
+      knownThreadIdsRef.current.add(key);
+      if (provider === "codex") warmThreadIdsRef.current.add(key);
+      dismissedThreadIdsRef.current.delete(key);
+      selectedThreadIdRef.current = key;
+      setSelectedThread(titled);
+      updateActiveTurn(key, activeTurnIdFromTurns(titled.turns || []));
+      clearPendingPrompt("");
+      setPendingPromptForThread(key, initialPrompt || "");
+      applyItemsFromTurns(key, titled.turns || []);
+      setMobilePanel(null);
+      setThreads((current) => mergeThreadsById(current, [titled]));
+
+      updateRuntimeSettings(
+        (current) => mergeThreadRuntimeSettings(current, threadResponse, { mode: current.mode }),
+        provider
+      );
+
+      if (initialPrompt || initialAttachments.length) {
+        markThreadLive(key);
+        await sendToThread(key, initialPrompt || "", threadResponse.model || "", initialAttachments, threadRuntime.mode, titled);
+      } else {
+        window.setTimeout(() => composerRef.current?.focus(), 0);
+      }
+    } finally {
+      sessionCreatingRef.current = false;
+      setSessionCreating(false);
     }
   }
 
-  async function resumeThread(thread: Thread) {
-    // Switch the UI to the new session immediately so the conversation panel
-    // doesn't keep showing the previous session's content while the (often
-    // slow) thread/resume call is in flight.
-    knownThreadIdsRef.current.add(thread.id);
-    dismissedThreadIdsRef.current.delete(thread.id);
-    selectedThreadIdRef.current = thread.id;
-    setSelectedThread(thread);
-    setMobilePanel(null);
-    window.setTimeout(() => promptRef.current?.focus(), 0);
+  async function switchProvider(provider: ProviderId) {
+    if (provider === selectedProvider && (!selectedThread || providerOf(selectedThread) === provider)) return;
 
-    const response = await codex("thread/resume", {
-      threadId: thread.id,
-      excludeTurns: false,
-      ...runtimeThreadParams(runtimeSettings)
-    });
+    const status = providerStatus(bootstrap, provider);
+    if (!providerAvailable(status)) {
+      setNotice(`${providerName(provider)} is not available on this server.`);
+      return;
+    }
 
-    // Drop the response if the user has switched to a different session in
-    // the meantime, otherwise the slow reply would clobber the newer one.
-    if (selectedThreadIdRef.current !== thread.id) return;
-
-    const resumed = response.thread as Thread;
-    selectedThreadIdRef.current = resumed.id;
-    setSelectedThread(resumed);
-    updateActiveTurn(resumed.id, activeTurnIdFromTurns(resumed.turns || []));
-    setThreads((current) => [resumed, ...current.filter((candidate) => candidate.id !== resumed.id)]);
-    updateRuntimeSettings((current) => ({
-      model: response.model || current.model,
-      reasoningEffort: response.reasoningEffort ?? current.reasoningEffort,
-      serviceTier: current.serviceTier ?? response.serviceTier ?? null,
-      approvalPolicy: response.approvalPolicy ?? current.approvalPolicy
+    const leavingThread = Boolean(selectedThread && providerOf(selectedThread) !== provider);
+    selectProviderPreference(provider);
+    setRuntimeSettingsByProvider((current) => ({
+      ...current,
+      [provider]: current[provider] || providerRuntimeDefaults(provider)
     }));
-    setPendingPromptByThread((current) => ({ ...current, [resumed.id]: "" }));
-    applyItemsFromTurns(resumed.id, resumed.turns || []);
+    beginDraftSession();
+    setNotice(
+      leavingThread
+        ? `${providerName(provider)} selected. Send a task to create the session.`
+        : `${providerName(provider)} selected for new sessions.`
+    );
+  }
+
+  startProviderActionRef.current = (provider) => {
+    switchProvider(provider)
+      .then(() => beginDraftSession())
+      .catch((error) => setNotice(error instanceof Error ? error.message : String(error), "error"));
+  };
+
+  async function resumeThread(thread: Thread) {
+    // Switch immediately. Cached turns stay visible; Codex without cache
+    // loads history from this single resume instead of a follow-up thread/read.
+    const provider = providerOf(thread);
+    const key = threadKey(thread);
+    const listedThread = normalizeThread(thread);
+    knownThreadIdsRef.current.add(key);
+    dismissedThreadIdsRef.current.delete(key);
+    selectedThreadIdRef.current = key;
+    selectProviderPreference(provider);
+    setSelectedThread(listedThread);
+    setShowAllHistory(false);
+    const hadCache = threadViewHasConversationHistory(key);
+    if (!hadCache) setHistoryLoadingThreadId(key);
+    setMobilePanel(null);
+    window.setTimeout(() => composerRef.current?.focus(), 0);
+
+    const excludeTurns = provider === "codex" && hadCache;
+
+    try {
+      // Codex warm-pool short-circuits this to thread/read when already loaded.
+      // Cursor maps resume to session/read and returns the local transcript.
+      const response = await agent(provider, "thread/resume", {
+        threadId: nativeThreadId(thread),
+        provider,
+        excludeTurns,
+        ...runtimeThreadParams(runtimeSettingsByProvider[provider] || providerRuntimeDefaults(provider))
+      });
+
+      // Drop the response if the user has switched to a different session in
+      // the meantime, otherwise the slow reply would clobber the newer one.
+      if (selectedThreadIdRef.current !== key) return;
+
+      const resumed = normalizeThread({ ...(response.thread as Thread), provider });
+      if (provider === "codex") warmThreadIdsRef.current.add(key);
+      selectedThreadIdRef.current = key;
+      setSelectedThread((current) => current && threadKey(current) === key ? hydrateListedThread(current, resumed) : hydrateListedThread(thread, resumed));
+      const queueTurnId = activeQueueTurns(queueSnapshotRef.current).get(key) || null;
+      updateActiveTurn(key, queueTurnId || activeTurnIdFromTurns(resumed.turns || []));
+      setThreads((current) => patchListedThread(current, resumed, key));
+      setRuntimeSettingsByProvider((current) => ({
+        ...current,
+        [provider]: mergeThreadRuntimeSettings(
+          current[provider] || providerRuntimeDefaults(provider),
+          response,
+          { mode: (current[provider] || providerRuntimeDefaults(provider)).mode }
+        )
+      }));
+      reconcileModeOverrides([resumed]);
+      setPendingPromptForThread(key, "");
+      if (turnsHaveItems(resumed.turns)) applyItemsFromTurns(key, resumed.turns);
+      setHistoryLoadingThreadId((current) => (current === key ? null : current));
+    } catch (error) {
+      setHistoryLoadingThreadId((current) => (current === key ? null : current));
+      throw error;
+    }
   }
 
   async function startTurn(
@@ -2594,29 +3210,50 @@ export default function Home() {
     inputAttachments: Attachment[] = [],
     turnMode: ModeKind = mode
   ) {
-    const input = inputItems(text, inputAttachments);
+    setGatewayDiagnostic(null);
+    const provider = providerFromThreadKey(threadId);
+    if (!providerAvailable(providerStatus(bootstrap, provider))) {
+      throw new Error(`${providerName(provider)} is not available on this server.`);
+    }
+    const input = inputItems(
+      text,
+      inputAttachments,
+      providerCapability(providerStatus(bootstrap, provider), "images")
+    );
     const root = selectedRoot(selectedThread, project, cwd);
-    const diffBaseline = root
-      ? await postJson<DiffSnapshot>("/api/projects/diff-snapshot", { cwd: root }).catch(() => null)
-      : null;
+    const providerRuntime = runtimeSettingsByProvider[provider] || providerRuntimeDefaults(provider);
     const turnRuntimeSettings = {
-      ...runtimeSettings,
+      ...providerRuntime,
       mode: turnMode,
       ...(modelOverride ? { model: modelOverride } : {})
     };
 
-    const response = await codex("turn/start", {
-      threadId,
+    // Don't block turn/start on git snapshot — snapshot can be slow on large trees.
+    const turnPromise = agent(provider, "turn/start", {
+      threadId: nativeThreadId(threadId),
+      provider,
       input,
       ...runtimeTurnParams(turnRuntimeSettings),
-      collaborationMode: collaborationMode(modelOverride, turnMode)
+      ...(provider === "codex" ? { collaborationMode: collaborationMode(modelOverride, turnMode) } : {})
     });
-    const turn = response?.turn as Turn | undefined;
-    updateActiveTurn(threadId, turn?.id || null);
-    if (turn?.id && diffBaseline) {
-      turnDiffBaselines.current.set(turn.id, { cwd: diffBaseline.root, tree: diffBaseline.tree });
+    const baselinePromise = root
+      ? postJson<DiffSnapshot>("/api/projects/diff-snapshot", { cwd: root }).catch(() => null)
+      : Promise.resolve(null);
+
+    markThreadLive(threadId);
+    try {
+      const [response, diffBaseline] = await Promise.all([turnPromise, baselinePromise]);
+      const turn = response?.turn as Turn | undefined;
+      updateActiveTurn(threadId, turn?.id || null);
+      if (turn?.id && diffBaseline) {
+        turnDiffBaselines.current.set(turn.id, { cwd: diffBaseline.root, tree: diffBaseline.tree });
+      }
+      commitSessionMode(threadId, turnMode);
+      return response;
+    } catch (error) {
+      clearThreadLive(threadId);
+      throw error;
     }
-    return response;
   }
 
   async function sendToThread(
@@ -2624,51 +3261,95 @@ export default function Home() {
     text: string,
     modelOverride?: string,
     inputAttachments: Attachment[] = [],
-    turnMode: ModeKind = mode
+    turnMode: ModeKind = mode,
+    threadOverride?: Thread
   ) {
-    await startTurn(threadId, text, modelOverride, inputAttachments, turnMode);
+    if (inputAttachments.length) {
+      return startTurn(threadId, text, modelOverride, inputAttachments, turnMode);
+    }
+    const provider = providerFromThreadKey(threadId);
+    const baseRuntime = runtimeSettingsByProvider[provider] || providerRuntimeDefaults(provider);
+    const queueRuntime = {
+      ...baseRuntime,
+      mode: turnMode,
+      ...(modelOverride ? { model: modelOverride } : {})
+    };
+    return enqueuePrompt(threadId, text, queueRuntime, threadOverride);
   }
 
-  async function runPlan() {
-    if (!selectedThread || wsState !== "online") return;
+  async function executeCurrentPlan() {
+    if (!selectedThread || wsState !== "online" || planSubmitting) return;
+    if (!sessionExecutionState.planPayloadReady) {
+      setNotice("Wait for the Plan result before executing it.", "warning");
+      return;
+    }
 
-    const threadId = selectedThread.id;
-    const text = latestPlanText
-      ? `Implement this plan now. Start making the required code changes, then run appropriate verification.\n\n${latestPlanText}`
-      : "Implement the plan from the previous turn. Start making the required code changes now, then run appropriate verification.";
-    updateRuntimeSettings({ mode: "default" });
-    setPendingPrompt(text);
+    const threadId = threadKey(selectedThread);
+    const provider = providerOf(selectedThread);
+    const text = `Implement this plan now. Start making the required code changes, then run appropriate verification.\n\n${sessionExecutionState.planPayload}`;
+    const agentRuntime = {
+      ...(runtimeSettingsByProvider[provider] || providerRuntimeDefaults(provider)),
+      mode: "default" as const
+    };
+    setPlanSubmitting(true);
     try {
       if (activeTurnId) {
-        await codex("turn/interrupt", { threadId, turnId: activeTurnId });
+        await agent(providerFromThreadKey(threadId), "turn/interrupt", { threadId: nativeThreadId(threadId), turnId: activeTurnId });
         updateActiveTurn(threadId, null, activeTurnId);
       }
-      await sendToThread(threadId, text, undefined, [], "default");
+      if (provider === "cursor") {
+        await startThread(text, [], {
+          cwd: selectedThread.cwd,
+          provider,
+          runtime: agentRuntime
+        });
+        setNotice("Plan sent to a new Cursor Agent session.", "success");
+      } else {
+        await sendToThread(threadId, text, undefined, [], "default");
+      }
     } catch (error) {
-      setPendingPrompt("");
-      setNotice(error instanceof Error ? error.message : String(error));
+      await refreshSelectedThread(threadId).catch(() => undefined);
+      setNotice(error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      setPlanSubmitting(false);
     }
   }
 
   async function steerCurrentTurn(text: string) {
     if (!selectedThread || !activeTurnId) return;
-    await codex("turn/steer", {
-      threadId: selectedThread.id,
+    if (!supportsSteer) {
+      await enqueuePrompt(threadKey(selectedThread), text);
+      setNotice(`${providerName(selectedProvider)} does not support live steering. Added to queue.`);
+      return;
+    }
+    await agent(providerOf(selectedThread), "turn/steer", {
+      threadId: nativeThreadId(selectedThread),
       input: inputItems(text),
       expectedTurnId: activeTurnId
     });
   }
 
-  async function submitPrompt(event: FormEvent) {
-    event.preventDefault();
-    const text = prompt.trim();
+  function clearComposerDraft() {
+    const key = selectedThreadIdRef.current || "";
+    draftsRef.current[key] = "";
+    composerRef.current?.setDraft("");
+  }
+
+  function restoreComposerDraft(text: string) {
+    const key = selectedThreadIdRef.current || "";
+    draftsRef.current[key] = text;
+    composerRef.current?.setDraft(text);
+  }
+
+  async function submitPrompt(text: string) {
+    if (composerSubmitting) return;
     const inputAttachments = attachments;
-    if (!text && inputAttachments.length === 0) return;
+    const chips = fileContexts;
+    if (!text && inputAttachments.length === 0 && chips.length === 0) return;
 
     if (text.startsWith("/")) {
-      setPrompt("");
       if (inputAttachments.length) {
-        setNotice("Slash commands cannot include image attachments.");
+        setNotice("Slash commands cannot include file attachments.");
         return;
       }
       const command = findSlashCommand(text);
@@ -2676,62 +3357,185 @@ export default function Home() {
         setNotice(`Unknown slash command: ${text}`);
         return;
       }
+      clearComposerDraft();
       await executeSlashCommand(command);
       return;
     }
 
     if (selectedThread && activeTurnId && inputAttachments.length > 0) {
-      setNotice("Image attachments can be sent after the active turn finishes.");
+      setNotice(`${providerName(selectedProvider)} file attachments can be sent after the active turn finishes.`);
       return;
     }
 
-    setPrompt("");
-    if (selectedThread && activeTurnId) {
-      enqueuePrompt(selectedThread.id, text);
-      return;
+    const expanded = expandFileContext(text, chips);
+    const existingThread = selectedThread;
+    clearComposerDraft();
+    setFileContexts([]);
+    setFileContextHighlight(null);
+    const directAttachmentSend = inputAttachments.length > 0;
+    if (existingThread) {
+      const titled = withImmediateTitle(existingThread, expanded);
+      if (titled !== existingThread) {
+        const key = threadKey(existingThread);
+        setSelectedThread((current) => (current && threadKey(current) === key ? { ...current, name: titled.name, preview: titled.preview } : current));
+        setThreads((current) => current.map((thread) => (threadKey(thread) === key ? { ...thread, name: titled.name, preview: titled.preview } : thread)));
+      }
+      setPendingPrompt(expanded);
+      markThreadLive(threadKey(existingThread));
     }
-
-    setPendingPrompt(text);
+    const lockComposer = !existingThread || directAttachmentSend;
+    if (lockComposer) setComposerSubmitting(true);
     try {
-      if (!selectedThread) await startThread(text, inputAttachments);
-      else await sendToThread(selectedThread.id, text, undefined, inputAttachments);
-      setAttachments([]);
+      if (!existingThread) await startThread(expanded, inputAttachments);
+      else await sendToThread(threadKey(existingThread), expanded, undefined, inputAttachments);
+      setAttachmentsByThread((current) => {
+        if (!(attachmentBucket in current)) return current;
+        const next = { ...current };
+        delete next[attachmentBucket];
+        return next;
+      });
+      if (existingThread && !directAttachmentSend && currentQueuePaused) {
+        setNotice("Saved to the server, but this queue needs review. Retry a saved task below.", "warning");
+      }
     } catch (error) {
+      if (existingThread) clearThreadLive(threadKey(existingThread));
       setPendingPrompt("");
       setNotice(error instanceof Error ? error.message : String(error));
-      setPrompt(text);
+      restoreComposerDraft(text);
+      setFileContexts(chips);
+    } finally {
+      if (lockComposer) setComposerSubmitting(false);
     }
   }
 
-  async function submitSteerPrompt() {
-    const text = prompt.trim();
+  async function submitSteerPrompt(text: string) {
     if (!text || !selectedThread || !activeTurnId) return;
-
-    setPrompt("");
     try {
       await steerCurrentTurn(text);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
-      setPrompt(text);
+      restoreComposerDraft(text);
     }
   }
 
   async function interrupt() {
-    if (!selectedThread || !activeTurnId) return;
-    await codex("turn/interrupt", { threadId: selectedThread.id, turnId: activeTurnId });
-    updateActiveTurn(selectedThread.id, null, activeTurnId);
+    if (!selectedThread) return;
+    if (!activeTurnId && sessionExecutionState.phase !== "running") return;
+    const key = threadKey(selectedThread);
+    try {
+      await agent(providerOf(selectedThread), "turn/interrupt", { threadId: nativeThreadId(selectedThread), turnId: activeTurnId || undefined });
+      updateActiveTurn(key, null);
+      setSelectedThread((current) => current && threadKey(current) === key ? { ...current, status: { type: "cancelled" } } : current);
+      setThreads((current) => current.map((thread) => threadKey(thread) === key ? { ...thread, status: { type: "cancelled" } } : thread));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error), "error");
+    }
   }
+
+  const refreshWorkspaceDiff = useCallback(async () => {
+    if (!workspaceRoot) {
+      setWorkspaceDiff(null);
+      setWorkspaceDiffError("Choose a server directory before requesting a diff.");
+      return;
+    }
+    setWorkspaceDiffKind("working");
+    setWorkspaceDiffLoading(true);
+    setWorkspaceDiffError("");
+    try {
+      setWorkspaceDiff(await getJson<ProjectDiff>(`/api/projects/diff?cwd=${encodeURIComponent(workspaceRoot)}`));
+    } catch (error) {
+      setWorkspaceDiff(null);
+      setWorkspaceDiffError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setWorkspaceDiffLoading(false);
+    }
+  }, [workspaceRoot]);
+
+  const openWorkspaceFile = useCallback((filePath: string) => {
+    setWorkspaceFileRequest(filePath);
+    setWorkspaceView("files");
+  }, []);
+
+  const clearWorkspaceFileRequest = useCallback(() => setWorkspaceFileRequest(null), []);
+
+  const handleLineSelect = useCallback((selection: { path: string; start: number; end: number; text: string }) => {
+    setFileContexts((current) => upsertChip(current, {
+      path: selection.path,
+      startLine: selection.start,
+      endLine: selection.end,
+      text: selection.text
+    }));
+    setFileContextHighlight({ path: selection.path, start: selection.start, end: selection.end });
+  }, []);
+
+  const openFileContext = useCallback((chip: FileContextChip) => {
+    if (chip.startLine && chip.endLine) {
+      setFileContextHighlight({ path: chip.path, start: chip.startLine, end: chip.endLine });
+    } else {
+      setFileContextHighlight(null);
+    }
+    openWorkspaceFile(chip.path);
+  }, [openWorkspaceFile]);
+
+  const applyParsedMentions = useCallback((mentions: Array<{ path: string; startLine: number | null; endLine: number | null }>) => {
+    const gen = ++mentionLoadGen.current;
+    if (!mentions.length) return;
+    setFileContexts((current) => {
+      let next = current;
+      for (const mention of mentions) {
+        const existing = next.find((chip) => chip.path === mention.path);
+        if (existing && mention.startLine == null) continue;
+        if (existing && existing.startLine === mention.startLine && existing.endLine === mention.endLine) continue;
+        next = upsertChip(next, {
+          path: mention.path,
+          startLine: mention.startLine,
+          endLine: mention.endLine,
+          text: ""
+        });
+      }
+      return next;
+    });
+    if (!workspaceRoot) return;
+    for (const mention of mentions) {
+      if (!mention.startLine || !mention.endLine) continue;
+      void getJson<ProjectFilePreview>(`/api/projects/read?${new URLSearchParams({ cwd: workspaceRoot, path: mention.path })}`)
+        .then((file) => {
+          if (gen !== mentionLoadGen.current || !file.content) return;
+          const text = sliceFileLines(file.content, mention.startLine, mention.endLine);
+          setFileContexts((current) => {
+            const existing = current.find((chip) => chip.path === mention.path);
+            if (!existing || existing.startLine !== mention.startLine || existing.endLine !== mention.endLine) return current;
+            if (existing.text === text) return current;
+            return upsertChip(current, { ...existing, text });
+          });
+        })
+        .catch(() => undefined);
+    }
+  }, [workspaceRoot]);
+
+  const openTurnDiff = useCallback((diff: ProjectDiff) => {
+    setWorkspaceDiff(diff);
+    setWorkspaceDiffKind("turn");
+    setWorkspaceDiffError("");
+    setWorkspaceView("diff");
+  }, []);
+
+  useEffect(() => {
+    if (workspaceView === "diff" && workspaceDiffKind === "working") refreshWorkspaceDiff();
+  }, [refreshWorkspaceDiff, workspaceDiffKind, workspaceView]);
 
   async function loadCommandPanel(panel: Exclude<CommandPanel, null>) {
     setCommandPanelLoading(true);
     setCommandPanelError("");
     try {
       const root = selectedRoot(selectedThread, project, cwd);
-      if (panel === "collab") {
+      if (panel === "provider") {
+        setCommandPanelData(providerOrder.map((provider) => providerStatus(bootstrap, provider)));
+      } else if (panel === "collab") {
         const response = await codex("collaborationMode/list", {});
         setCommandPanelData(response?.data || bootstrap?.codex?.collaborationModes || []);
       } else if (panel === "model") {
-        setCommandPanelData(await codex("model/list", { limit: 100, includeHidden: false }));
+        setCommandPanelData(await agent(selectedProvider, "model/list", { limit: 100, includeHidden: false, provider: selectedProvider }));
       } else if (panel === "mcp") {
         setCommandPanelData(await codex("mcpServerStatus/list", { detail: "full", limit: 100 }));
       } else if (panel === "plugins") {
@@ -2768,26 +3572,34 @@ export default function Home() {
     await loadCommandPanel(panel);
   }
 
-  function applyCollabPreset(preset: any) {
+  providerDetailsActionRef.current = () => {
+    openCommandPanel("provider").catch((error) => setNotice(error instanceof Error ? error.message : String(error), "error"));
+  };
+
+  async function applyCollabPreset(preset: any) {
     if (preset?.mode !== "default" && preset?.mode !== "plan") {
-      setNotice("This collaboration mode is not mapped in Codex Remote Console yet.");
+      setNotice("This collaboration mode is not mapped in Coding Agent Console yet.");
       return;
     }
     updateRuntimeSettings({
-      mode: preset.mode,
       ...(preset.model ? { model: preset.model } : {}),
-      reasoningEffort: preset.reasoning_effort ?? runtimeSettings.reasoningEffort
+      reasoningEffort: runtimeSettings.reasoningEffort ?? preset.reasoning_effort ?? null
     });
+    await selectSessionMode(preset.mode);
     setCommandPanel(null);
-    setNotice(`${modeLabel(preset.mode)} mode selected.`);
   }
 
   function selectModel(model: any, effort?: ReasoningEffort) {
     const nextModel = modelId(model);
     if (!nextModel) return;
+    const supportedEfforts = modelReasoningOptions(model);
+    const currentEffortSupported = supportedEfforts.includes(runtimeSettings.reasoningEffort);
     updateRuntimeSettings({
       model: nextModel,
-      reasoningEffort: effort ?? model?.defaultReasoningEffort ?? runtimeSettings.reasoningEffort
+      reasoningEffort:
+        effort ?? (supportedEfforts.length
+          ? (currentEffortSupported ? runtimeSettings.reasoningEffort : model?.defaultReasoningEffort ?? supportedEfforts[0])
+          : null)
     });
     setCommandPanel(null);
     setNotice(`Model set to ${modelTitle(model)}. Future turns will use this session setting.`);
@@ -2812,24 +3624,26 @@ export default function Home() {
       return;
     }
 
-    const response = await codex("thread/resume", {
-      threadId: selectedThread.id,
-      excludeTurns: false,
+    const provider = providerOf(selectedThread);
+    const response = await agent(provider, "thread/resume", {
+      threadId: nativeThreadId(selectedThread),
+      provider,
+      excludeTurns: provider === "codex",
+      ...(provider === "codex" ? { forceResume: true } : {}),
       ...runtimeThreadParams(nextSettings)
     });
-    const resumed = response.thread as Thread;
-    selectedThreadIdRef.current = resumed.id;
-    setSelectedThread(resumed);
-    updateActiveTurn(resumed.id, activeTurnIdFromTurns(resumed.turns || []));
-    setThreads((current) => [resumed, ...current.filter((candidate) => candidate.id !== resumed.id)]);
-    applyItemsFromTurns(resumed.id, resumed.turns || []);
-    updateRuntimeSettings((current) => ({
-      model: response.model || current.model,
-      reasoningEffort: response.reasoningEffort ?? current.reasoningEffort,
-      serviceTier: current.serviceTier ?? response.serviceTier ?? null,
-      approvalPolicy: response.approvalPolicy ?? current.approvalPolicy,
-      sandboxMode: nextSettings.sandboxMode
-    }));
+    const listedKey = threadKey(selectedThread);
+    const resumed = normalizeThread({ ...(response.thread as Thread), provider });
+    if (provider === "codex") warmThreadIdsRef.current.add(listedKey);
+    selectedThreadIdRef.current = listedKey;
+    setSelectedThread((current) => current && threadKey(current) === listedKey ? hydrateListedThread(current, resumed) : current);
+    const queueTurnId = activeQueueTurns(queueSnapshotRef.current).get(listedKey) || null;
+    updateActiveTurn(listedKey, queueTurnId || activeTurnIdFromTurns(resumed.turns || []));
+    setThreads((current) => patchListedThread(current, resumed, listedKey));
+    if (provider !== "codex" && turnsHaveItems(resumed.turns)) applyItemsFromTurns(listedKey, resumed.turns);
+    updateRuntimeSettings((current) =>
+      mergeThreadRuntimeSettings(current, response, { sandboxMode: nextSettings.sandboxMode, mode: current.mode })
+    );
     setNotice("Permissions refreshed for the idle session.");
   }
 
@@ -2840,9 +3654,10 @@ export default function Home() {
       setNotice("Enter a session title first.");
       return;
     }
-    await codex("thread/name/set", { threadId: selectedThread.id, name });
-    setSelectedThread((current) => (current && current.id === selectedThread.id ? { ...current, name } : current));
-    setThreads((current) => current.map((thread) => (thread.id === selectedThread.id ? { ...thread, name } : thread)));
+    const key = threadKey(selectedThread);
+    await agent(providerOf(selectedThread), "thread/name/set", { threadId: nativeThreadId(selectedThread), name, provider: providerOf(selectedThread) });
+    setSelectedThread((current) => (current && threadKey(current) === key ? { ...current, name } : current));
+    setThreads((current) => current.map((thread) => (threadKey(thread) === key ? { ...thread, name } : thread)));
     setCommandPanel(null);
     setNotice("Session renamed.");
   }
@@ -2850,26 +3665,23 @@ export default function Home() {
   async function forkCurrentThread(ephemeral: boolean) {
     if (!selectedThread) return;
     const response = await codex("thread/fork", {
-      threadId: selectedThread.id,
+      threadId: nativeThreadId(selectedThread),
       ephemeral,
       excludeTurns: false,
       persistExtendedHistory: true,
       ...runtimeThreadParams(runtimeSettings)
     });
-    const thread = response.thread as Thread;
-    knownThreadIdsRef.current.add(thread.id);
-    dismissedThreadIdsRef.current.delete(thread.id);
-    selectedThreadIdRef.current = thread.id;
+    const thread = normalizeThread({ ...(response.thread as Thread), provider: "codex" });
+    const key = threadKey(thread);
+    knownThreadIdsRef.current.add(key);
+    warmThreadIdsRef.current.add(key);
+    dismissedThreadIdsRef.current.delete(key);
+    selectedThreadIdRef.current = key;
     setSelectedThread(thread);
-    updateActiveTurn(thread.id, activeTurnIdFromTurns(thread.turns || []));
-    setThreads((current) => [thread, ...current.filter((item) => item.id !== thread.id)]);
-    applyItemsFromTurns(thread.id, thread.turns || []);
-    updateRuntimeSettings((current) => ({
-      model: response.model || current.model,
-      reasoningEffort: response.reasoningEffort ?? current.reasoningEffort,
-      serviceTier: current.serviceTier ?? response.serviceTier ?? null,
-      approvalPolicy: response.approvalPolicy ?? current.approvalPolicy
-    }));
+    updateActiveTurn(key, activeTurnIdFromTurns(thread.turns || []));
+    setThreads((current) => mergeThreadsById(current, [thread]));
+    applyItemsFromTurns(key, thread.turns || []);
+    updateRuntimeSettings((current) => mergeThreadRuntimeSettings(current, response, { mode: current.mode }));
     setNotice(ephemeral ? "Side session created." : "Session forked.");
   }
 
@@ -2885,12 +3697,9 @@ export default function Home() {
   function insertMention(result: any) {
     const path = String(result?.path || result?.file_name || "");
     if (!path) return;
-    setPrompt((current) => {
-      const separator = current && !/\s$/.test(current) ? " " : "";
-      return `${current}${separator}@${path}`;
-    });
+    composerRef.current?.appendText(`@${path}`);
+    setFileContexts((current) => upsertChip(current, { path, startLine: null, endLine: null, text: "" }));
     setCommandPanel(null);
-    window.setTimeout(() => promptRef.current?.focus(), 0);
   }
 
   async function toggleExperimentalFeature(feature: any) {
@@ -2902,7 +3711,7 @@ export default function Home() {
 
   async function setMemoryMode(mode: "enabled" | "disabled") {
     if (!selectedThread) return;
-    await codex("thread/memoryMode/set", { threadId: selectedThread.id, mode });
+    await codex("thread/memoryMode/set", { threadId: nativeThreadId(selectedThread), mode });
     setCommandPanel(null);
     setNotice(`Memory mode ${mode}.`);
   }
@@ -2917,9 +3726,8 @@ export default function Home() {
     setNotice("");
     try {
       if (command.action === "set-mode") {
-        const nextMode: ModeKind = command.id === "plan" ? "plan" : "default";
-        updateRuntimeSettings({ mode: nextMode });
-        setNotice(`${modeLabel(nextMode)} mode selected.`);
+        const nextMode: ModeKind = command.id === "plan" ? "plan" : command.id === "ask" ? "ask" : "default";
+        await selectSessionMode(nextMode);
         return;
       }
 
@@ -2929,25 +3737,26 @@ export default function Home() {
       }
 
       if (command.action === "toggle-fast") {
-        const serviceTier: ServiceTier = runtimeSettings.serviceTier === "fast" ? "flex" : "fast";
+        const serviceTier: ServiceTier = isFastServiceTier(runtimeSettings.serviceTier) ? "default" : "priority";
         updateRuntimeSettings({ serviceTier });
-        setNotice(`Fast mode ${serviceTier === "fast" ? "enabled" : "disabled"} for future turns. Service tier: ${serviceTier}.`);
+        setNotice(`Fast mode ${isFastServiceTier(serviceTier) ? "enabled" : "disabled"} for future turns. Service tier: ${serviceTier}.`);
         return;
       }
 
       if (command.action === "run-review" && selectedThread) {
         try {
+          if (providerOf(selectedThread) !== "codex") throw new Error("review/start unsupported for this provider");
           const response = await codex("review/start", {
-            threadId: selectedThread.id,
+            threadId: nativeThreadId(selectedThread),
             target: { type: "uncommittedChanges" },
             delivery: "inline"
           });
-          updateActiveTurn(selectedThread.id, response?.turn?.id || null);
+          updateActiveTurn(threadKey(selectedThread), response?.turn?.id || null);
           setNotice("Review started in the current session.");
         } catch (error) {
           if (!looksUnsupportedMethod(error)) throw error;
           await startTurn(
-            selectedThread.id,
+            threadKey(selectedThread),
             [
               "Review my current uncommitted working-tree changes.",
               "Focus on bugs, regressions, security issues, and missing tests.",
@@ -2964,7 +3773,7 @@ export default function Home() {
       }
 
       if (command.action === "new-thread") {
-        await startThread();
+        beginDraftSession();
         return;
       }
 
@@ -2985,7 +3794,7 @@ export default function Home() {
       }
 
       if (command.action === "compact-thread" && selectedThread) {
-        await codex("thread/compact/start", { threadId: selectedThread.id });
+        await codex("thread/compact/start", { threadId: nativeThreadId(selectedThread) });
         setNotice("Conversation compaction started.");
         return;
       }
@@ -2996,7 +3805,8 @@ export default function Home() {
       }
 
       if (command.action === "show-diff") {
-        await openCommandPanel("diff");
+        setWorkspaceDiffKind("working");
+        setWorkspaceView("diff");
         return;
       }
 
@@ -3020,7 +3830,7 @@ export default function Home() {
           return;
         }
         if (selectedThread) {
-          await codex("thread/backgroundTerminals/clean", { threadId: selectedThread.id });
+          await codex("thread/backgroundTerminals/clean", { threadId: nativeThreadId(selectedThread) });
           setNotice("Background terminals cleaned for this session.");
           return;
         }
@@ -3031,52 +3841,158 @@ export default function Home() {
     }
   }
 
-  async function closeThread() {
-    if (!selectedThread) return;
-    if (activeTurnId) {
-      setNotice("Stop the active turn before closing this session.");
+  async function closeThreadTarget(thread: Thread) {
+    const closingId = threadKey(thread);
+    if (activeTurnIdsByThread[closingId]) {
+      setNotice("Stop the active turn before closing this session.", "warning");
       return;
     }
-    const closingId = selectedThread.id;
-    await codex("thread/unsubscribe", { threadId: closingId });
+    const provider = providerOf(thread);
+    await agent(provider, "thread/archive", { threadId: nativeThreadId(thread), provider });
+    if (provider === "codex") {
+      await codex("thread/unsubscribe", { threadId: nativeThreadId(thread) }).catch(() => undefined);
+    }
     dismissedThreadIdsRef.current.add(closingId);
     knownThreadIdsRef.current.delete(closingId);
-    selectedThreadIdRef.current = null;
-    updateActiveTurn(closingId, null);
-    setSelectedThread(null);
-    discardThreadBucket(closingId);
+    removeArchivedThread(closingId);
+    setNotice("Session closed.", "success");
   }
 
-  async function archiveThread() {
+  async function closeThread() {
     if (!selectedThread) return;
-    if (activeTurnId) {
-      setNotice("Stop the active turn before archiving this session.");
-      return;
-    }
-    await archiveManagedThread(selectedThread);
+    await closeThreadTarget(selectedThread);
   }
+
+  const selectFleetThread = useCallback((key: string) => {
+    const thread = threadByKey.get(key);
+    if (!thread) return;
+    setWorkspaceView("chat");
+    setMobilePanel(null);
+    resumeThread(thread).catch((error) => setNotice(error instanceof Error ? error.message : String(error), "error"));
+  }, [threadByKey]);
+
+  function selectAdjacentThread(thread: Thread | null) {
+    if (!thread) return;
+    setWorkspaceView("chat");
+    resumeThread(thread).catch((error) => setNotice(error instanceof Error ? error.message : String(error), "error"));
+  }
+
+  const renameFleetThread = useCallback((key: string) => {
+    const thread = threadByKey.get(key);
+    if (!thread) return;
+    selectedThreadIdRef.current = key;
+    setSelectedThread(thread);
+    selectProviderPreference(providerOf(thread));
+    setRenameValue(threadTitle(thread));
+    setCommandPanelData(null);
+    setCommandPanelError("");
+    setCommandPanel("rename");
+    setMobilePanel(null);
+  }, [threadByKey]);
+
+  const manageFleetThread = useCallback((key: string) => {
+    const thread = threadByKey.get(key);
+    if (!thread) return;
+    setSessionManagerSearch(threadTitle(thread));
+    setSessionManagerProviderFilter(providerOf(thread));
+    openSessionManager();
+  }, [threadByKey]);
+
+  const closeFleetThread = useCallback((key: string) => {
+    const thread = threadByKey.get(key);
+    if (!thread) return;
+    closeThreadTarget(thread).catch((error) => setNotice(error instanceof Error ? error.message : String(error), "error"));
+  }, [threadByKey]);
 
   async function answerServerRequest(request: ServerRequest, result: unknown) {
+    setPendingRequests((current) => current.filter((item) => item.id !== request.id));
+    const provider = ((request.params as { provider?: ProviderId } | undefined)?.provider || "codex") as ProviderId;
+    if (provider !== "codex" && bootstrap?.providers) {
+      await call({
+        type: "agent:serverResponse",
+        provider,
+        serverRequestId: request.id,
+        result
+      });
+      return;
+    }
     await call({
       type: "codex:serverResponse",
       serverRequestId: request.id,
       result
     });
-    setPendingRequests((current) => current.filter((item) => item.id !== request.id));
   }
 
-  async function addImageFiles(files: File[]) {
+  async function addFiles(files: File[]) {
     if (!files.length) return;
+    const availableSlots = Math.max(0, uploadMaxFiles - attachments.length - uploadSlotsInUse.current);
+    if (!availableSlots) {
+      setNotice(`You can attach up to ${uploadMaxFiles} files at a time.`, "warning");
+      return;
+    }
+
+    const selectedFiles = files.slice(0, availableSlots);
+    const acceptedFiles = selectedFiles.filter((file) => file.size <= uploadMaxBytes);
+    const rejectedFiles = selectedFiles.filter((file) => file.size > uploadMaxBytes);
+    if (!acceptedFiles.length) {
+      setNotice(`${rejectedFiles[0]?.name || "File"} exceeds the ${formatBytes(uploadMaxBytes)} server upload limit.`, "warning");
+      return;
+    }
+
+    uploadSlotsInUse.current += acceptedFiles.length;
+    setUploadsInProgress((current) => current + acceptedFiles.length);
     try {
-      const next = await Promise.all(files.map(readImageAttachment));
-      setAttachments((current) => [...current, ...next].slice(0, 8));
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
+      const results = await Promise.allSettled(acceptedFiles.map(uploadServerFile));
+      const next = results.flatMap((result) => result.status === "fulfilled" ? [{
+        id: result.value.id,
+        name: result.value.name,
+        type: result.value.contentType,
+        size: result.value.size,
+        image: result.value.image,
+        url: uploadPreviewUrl(result.value.id)
+      }] : []);
+      if (next.length) {
+        setAttachmentsByThread((current) => ({
+          ...current,
+          [attachmentBucket]: [...(current[attachmentBucket] || []), ...next].slice(0, uploadMaxFiles)
+        }));
+      }
+
+      const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failures.length || rejectedFiles.length || files.length > selectedFiles.length) {
+        const firstFailure = failures[0]?.reason;
+        const detail = firstFailure instanceof Error
+          ? firstFailure.message
+          : rejectedFiles.length
+            ? `${rejectedFiles[0].name} exceeds the ${formatBytes(uploadMaxBytes)} server upload limit.`
+            : `Only ${uploadMaxFiles} files can be attached at a time.`;
+        setNotice(`${next.length ? `${next.length} file${next.length === 1 ? "" : "s"} uploaded. ` : ""}${detail}`, "warning");
+      } else {
+        setNotice(`${next.length} file${next.length === 1 ? "" : "s"} uploaded to the server.`, "success");
+      }
+    } finally {
+      uploadSlotsInUse.current = Math.max(0, uploadSlotsInUse.current - acceptedFiles.length);
+      setUploadsInProgress((current) => Math.max(0, current - acceptedFiles.length));
     }
   }
 
   function removeAttachment(id: string) {
-    setAttachments((current) => current.filter((attachment) => attachment.id !== id));
+    const attachment = attachments.find((item) => item.id === id);
+    setAttachmentsByThread((current) => {
+      const items = (current[attachmentBucket] || []).filter((attachment) => attachment.id !== id);
+      if (!items.length) {
+        if (!(attachmentBucket in current)) return current;
+        const next = { ...current };
+        delete next[attachmentBucket];
+        return next;
+      }
+      return { ...current, [attachmentBucket]: items };
+    });
+    if (attachment) {
+      void deleteServerFile(attachment.id).catch((error) => {
+        setNotice(`Removed ${attachment.name} here, but server cleanup failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+      });
+    }
   }
 
   function renderSessionManager() {
@@ -3090,8 +4006,8 @@ export default function Home() {
               <h2>Session Manager</h2>
               <p>{sessionManagerArchived ? "Archived sessions are hidden from the default list." : "Browse and manage sessions across directories."}</p>
             </div>
-            <button title="Close session manager" type="button" onClick={() => setSessionManagerOpen(false)}>
-              <X size={17} />
+            <button aria-label="Close session manager" title="Close session manager" type="button" onClick={() => setSessionManagerOpen(false)}>
+              <X aria-hidden="true" size={17} />
             </button>
           </header>
 
@@ -3099,11 +4015,44 @@ export default function Home() {
             <label className="sessionSearch">
               <Search size={16} />
               <input
+                aria-label="Search sessions"
+                autoComplete="off"
+                name="session-search"
                 value={sessionManagerSearch}
                 onChange={(event) => setSessionManagerSearch(event.target.value)}
-                placeholder="Search sessions"
+                placeholder="Search sessions…"
               />
             </label>
+            <div className="segmentedMini sessionScopeToggle">
+              <button
+                className={sessionManagerProviderFilter === "all" ? "active" : ""}
+                type="button"
+                onClick={() => setSessionManagerProviderFilter("all")}
+              >
+                All
+              </button>
+              <button
+                className={sessionManagerProviderFilter === "codex" ? "active" : ""}
+                type="button"
+                onClick={() => setSessionManagerProviderFilter("codex")}
+              >
+                Codex
+              </button>
+              <button
+                className={sessionManagerProviderFilter === "cursor" ? "active" : ""}
+                type="button"
+                onClick={() => setSessionManagerProviderFilter("cursor")}
+              >
+                Cursor
+              </button>
+              <button
+                className={sessionManagerProviderFilter === "claude" ? "active" : ""}
+                type="button"
+                onClick={() => setSessionManagerProviderFilter("claude")}
+              >
+                Claude
+              </button>
+            </div>
             <div className="segmentedMini sessionScopeToggle">
               <button
                 className={!sessionManagerArchived ? "active" : ""}
@@ -3157,9 +4106,10 @@ export default function Home() {
               <div className="managerThreadRows">
                 {orderedSessionManagerThreads.map((thread) => {
                   const active = threadIsActive(thread, activeTurnIdsByThread);
-                  const busy = sessionManagerBusy === thread.id;
+                  const key = threadKey(thread);
+                  const busy = sessionManagerBusy === key;
                   return (
-                    <div className={`managerThreadRow ${selectedThread?.id === thread.id ? "selected" : ""}`} key={thread.id}>
+                    <div className={`managerThreadRow ${threadKey(selectedThread) === key ? "selected" : ""}`} key={key}>
                       <button
                         className="managerThreadMain managerThreadMainFlat"
                         type="button"
@@ -3167,6 +4117,7 @@ export default function Home() {
                       >
                         <strong>{thread.name || thread.preview || "Untitled session"}</strong>
                         <small>{formatTime(thread.updatedAt)}</small>
+                        <small className="providerBadge">{providerName(providerOf(thread))}</small>
                         <small title={thread.cwd}>{directoryLabel(thread.cwd)}</small>
                         <small>{statusLabel(thread.status)}</small>
                       </button>
@@ -3228,13 +4179,14 @@ export default function Home() {
                   </div>
                   {collapsed ? null : (
                     <div className="managerThreadGroupBody">
-                      <div className="threadGroupPath">{group.cwd}</div>
+                      <div className="threadGroupPath" dir="ltr" title={group.cwd} translate="no">{group.cwd}</div>
                       <div className="managerThreadRows">
                         {group.threads.map((thread) => {
                           const active = threadIsActive(thread, activeTurnIdsByThread);
-                          const busy = sessionManagerBusy === thread.id;
+                          const key = threadKey(thread);
+                          const busy = sessionManagerBusy === key;
                           return (
-                            <div className={`managerThreadRow ${selectedThread?.id === thread.id ? "selected" : ""}`} key={thread.id}>
+                            <div className={`managerThreadRow ${threadKey(selectedThread) === key ? "selected" : ""}`} key={key}>
                               <button
                                 className="managerThreadMain"
                                 type="button"
@@ -3242,6 +4194,7 @@ export default function Home() {
                               >
                                 <strong>{thread.name || thread.preview || "Untitled session"}</strong>
                                 <small>{formatTime(thread.updatedAt)}</small>
+                                <small className="providerBadge">{providerName(providerOf(thread))}</small>
                                 <small>{statusLabel(thread.status)}</small>
                               </button>
                               <div className="managerThreadActions">
@@ -3306,11 +4259,43 @@ export default function Home() {
         <section className={`dialog commandDialog commandDialog-${commandPanel}`}>
           <header>
             <h2>{panelTitle(commandPanel)}</h2>
-            <p>Session-scoped command settings. Changes here do not write ~/.codex/config.toml.</p>
           </header>
 
-          {commandPanelLoading ? <p className="muted">Loading...</p> : null}
+          {commandPanelLoading ? <p className="muted">Loading…</p> : null}
           {commandPanelError ? <p className="errorText">{commandPanelError}</p> : null}
+
+          {commandPanel === "provider" ? (
+            <div className="providerPanel">
+              {providerOrder.map((provider) => {
+                const status = providerStatus(bootstrap, provider);
+                const active = selectedProvider === provider;
+                const capabilities = Object.entries(status.capabilities || {})
+                  .filter(([, enabled]) => enabled)
+                  .map(([name]) => name);
+                return (
+                  <button
+                    className={`providerCard ${active ? "selected" : ""}`}
+                    key={provider}
+                    type="button"
+                    onClick={() => switchProvider(provider).catch((error) => setNotice(error.message))}
+                  >
+                    <span>
+                      <strong>{providerName(provider)}</strong>
+                      <small>{status.version || "version unknown"}</small>
+                    </span>
+                    <code className={providerAvailable(status) ? "providerAvailable" : "providerUnavailable"}>
+                      {status.availability || "unknown"}
+                    </code>
+                    <small>{status.authStatus || "auth unknown"}</small>
+                    <small>{active ? "Current for new sessions" : "Use for the next session"}</small>
+                    <small>{capabilities.slice(0, 8).join(", ")}</small>
+                    {provider === "cursor" ? <small className="providerModeWarning">{cursorExecutionModeDescription}</small> : null}
+                  </button>
+                );
+              })}
+              <p className="muted">This only chooses the next agent. Send a task to create the session.</p>
+            </div>
+          ) : null}
 
           {commandPanel === "collab" ? (
             <div className="commandList">
@@ -3343,12 +4328,13 @@ export default function Home() {
               {rows.map((model) => {
                 const reasoningOptions = modelReasoningOptions(model);
                 const active = modelId(model) === runtimeSettings.model;
+                const description = modelDescription(model);
                 return (
                   <div className={`commandRow modelRow ${active ? "selected" : ""}`} key={modelId(model)}>
                     <button type="button" onClick={() => selectModel(model)}>
                       <span>
                         <strong>{modelTitle(model)}</strong>
-                        <small>{modelDescription(model)}</small>
+                        {description ? <small>{description}</small> : null}
                       </span>
                       {model?.isDefault ? <code>default</code> : null}
                     </button>
@@ -3461,15 +4447,15 @@ export default function Home() {
               <dt>CWD</dt>
               <dd>{root || "none"}</dd>
               <dt>Model</dt>
-              <dd>{runtimeSettings.model || "server default"}</dd>
+              <dd>{displayedModel || "not reported"}</dd>
               <dt>Reasoning</dt>
-              <dd>{runtimeSettings.reasoningEffort || "server default"}</dd>
+              <dd>{displayedReasoning || "not reported"}</dd>
               <dt>Fast mode</dt>
-              <dd>{fastModeEnabled ? "enabled" : "disabled"}</dd>
+              <dd>{displayedServiceTier ? (displayedFastMode ? "enabled" : "disabled") : "not reported"}</dd>
               <dt>Service tier</dt>
-              <dd>{serviceTierText}</dd>
+              <dd>{displayedServiceTier || "not reported"}</dd>
               <dt>Mode</dt>
-              <dd>{modeLabel(runtimeSettings.mode)}</dd>
+              <dd>{modeLabel(mode)}</dd>
               <dt>Approval</dt>
               <dd>{shortJson(runtimeSettings.approvalPolicy)}</dd>
               <dt>Sandbox</dt>
@@ -3647,12 +4633,29 @@ export default function Home() {
     return (
       <main className="boot">
         <p className="errorText">{bootstrapError}</p>
+        <button
+          type="button"
+          onClick={() => {
+            setBootstrapError(null);
+            fetchBootstrap()
+              .then((nextBootstrap) => {
+                setBootstrap(nextBootstrap);
+                if (nextBootstrap.defaultCwd) {
+                  const nextCwd = nextBootstrap.defaultCwd;
+                  setCwd((current) => current || nextCwd);
+                }
+              })
+              .catch((error) => setBootstrapError(error instanceof Error ? error.message : String(error)));
+          }}
+        >
+          Retry
+        </button>
       </main>
     );
   }
 
   if (!bootstrap) {
-    return <main className="boot">Loading Codex Remote Console...</main>;
+    return <main className="boot">Loading Coding Agent Console…</main>;
   }
 
   if (!bootstrap.authenticated) {
@@ -3660,8 +4663,8 @@ export default function Home() {
       <main className="loginShell">
         <form className="loginPanel" onSubmit={login}>
           <Code2 size={32} />
-          <h1>Codex Remote Console</h1>
-          <p>Private access to server-side Codex sessions.</p>
+          <h1>Coding Agent Console</h1>
+          <p>Private access to server-side coding agent sessions.</p>
           <input
             autoFocus
             value={password}
@@ -3682,7 +4685,8 @@ export default function Home() {
   return (
     <main
       className={`appShell ${sidebarCollapsed ? "sessionsCollapsed" : ""}`}
-      style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
+      ref={appShellRef}
+      style={{ "--sidebar-width": `${sidebarWidth}px`, "--context-width": `${contextWidth}px` } as CSSProperties}
     >
       {mobilePanel ? (
         <button
@@ -3704,14 +4708,14 @@ export default function Home() {
         ) : null}
         {sidebarCollapsed && !mobilePanel ? (
           <div className="sidebarRail">
-            <button title="Expand sessions" type="button" onClick={() => setSidebarCollapsedValue(false)}>
-              <PanelLeftOpen size={18} />
+            <button aria-label="Expand sessions" title="Expand sessions" type="button" onClick={() => setSidebarCollapsedValue(false)}>
+              <PanelLeftOpen aria-hidden="true" size={18} />
             </button>
-            <button title="New session" type="button" onClick={() => startThread().catch((error) => setNotice(error.message))} disabled={wsState !== "online" || !cwd.trim()}>
-              <SquarePen size={18} />
+            <button aria-label={`New ${providerName(selectedProvider)} session`} title={`New ${providerName(selectedProvider)} session`} type="button" onClick={beginDraftSession} disabled={!cwd.trim()}>
+              <SquarePen aria-hidden="true" size={18} />
             </button>
-            <button title="Manage sessions" type="button" onClick={openSessionManager}>
-              <History size={18} />
+            <button aria-label={`Manage ${threads.length} sessions`} title="Manage sessions" type="button" onClick={openSessionManager}>
+              <History aria-hidden="true" size={18} />
               <span>{threads.length}</span>
             </button>
           </div>
@@ -3720,88 +4724,129 @@ export default function Home() {
         <div className="brand">
           <Code2 size={24} />
           <div>
-            <h1>Codex Remote Console</h1>
-            <span>{bootstrap.codexVersion}</span>
+            <h1>Console</h1>
+            <span>{providerName(selectedProvider)}</span>
           </div>
           <div className="brandActions">
-            <button className="desktopCollapseButton" title="Collapse sessions" type="button" onClick={() => setSidebarCollapsedValue(true)}>
-              <PanelLeftClose size={17} />
+            <button aria-label="Collapse sessions" className="desktopCollapseButton" title="Collapse sessions" type="button" onClick={() => setSidebarCollapsedValue(true)}>
+              <PanelLeftClose aria-hidden="true" size={17} />
             </button>
-          <button className="mobileSheetClose" title="Close panel" type="button" onClick={() => setMobilePanel(null)}>
-            <X size={17} />
+          <button aria-label="Close sessions" className="mobileSheetClose" title="Close panel" type="button" onClick={() => setMobilePanel(null)}>
+            <X aria-hidden="true" size={17} />
           </button>
           </div>
         </div>
 
+        <section className="providerStrip" aria-label="New session">
+          <div className="providerToggle" role="radiogroup" aria-label="Agent for new sessions">
+            {providerOrder.map((provider) => {
+              const status = providerStatus(bootstrap, provider);
+              const available = providerAvailable(status);
+              const selected = selectedProvider === provider;
+              return (
+                <button
+                  aria-checked={selected}
+                  aria-label={providerName(provider)}
+                  className={`providerChip ${selected ? "active" : ""} ${available ? "" : "unavailable"}`}
+                  disabled={sessionCreating || !available}
+                  key={provider}
+                  role="radio"
+                  title={`${providerName(provider)} · ${status.availability || "unknown"} · ${status.authStatus || "auth unknown"}`}
+                  type="button"
+                  onClick={() => switchProvider(provider).catch((error) => setNotice(error instanceof Error ? error.message : String(error), "error"))}
+                >
+                  <span>{providerName(provider)}</span>
+                  <small>{available ? "ready" : "unavailable"}</small>
+                </button>
+              );
+            })}
+          </div>
+          <div className="providerStripActions">
+            <button
+              className="newSessionPrimary"
+              disabled={!cwd.trim() || !providerAvailable(currentProviderStatus)}
+              type="button"
+              onClick={beginDraftSession}
+            >
+              <SquarePen aria-hidden="true" size={16} />
+              New {providerName(selectedProvider)}
+            </button>
+            <button aria-label="Provider details" title="Provider details" type="button" onClick={() => openCommandPanel("provider").catch((error) => setNotice(error instanceof Error ? error.message : String(error), "error"))}>
+              <Info aria-hidden="true" size={14} />
+            </button>
+          </div>
+        </section>
+
         <section className="panel projectPanel">
-          <label>Server directory</label>
-          <div className="pathRow">
-            <input value={cwd} onChange={(event) => setCwd(event.target.value)} spellCheck={false} />
-            <button
-              title={pinTargetPinned ? "Unpin current directory" : "Pin current directory"}
-              type="button"
-              onClick={() => togglePinnedDirectory(pinTarget)}
-            >
-              {pinTargetPinned ? <PinOff size={18} /> : <Pin size={18} />}
-            </button>
-            <button
-              title="Browse server directories"
-              type="button"
-              onClick={() => {
-                setMobilePanel(null);
-                setDirectoryPickerOpen(true);
-              }}
-            >
-              <FolderOpen size={18} />
-            </button>
-          </div>
-          <div className="pathActions">
-            <button type="button" onClick={resolveCwd}>
-              <Check size={15} />
-              Check path
-            </button>
-            {pinnedDirs.slice(0, 3).map((path) => (
-              <button className="pinnedPathButton" key={path} title={path} type="button" onClick={() => useDirectory(path)}>
-                <Pin size={13} />
-                {directoryLabel(path)}
-              </button>
-            ))}
-            {recentDirs.filter((path) => !pinnedDirSet.has(normalizeDirectoryPath(path))).slice(0, 2).map((path) => (
-              <button key={path} title={path} type="button" onClick={() => useDirectory(path)}>
-                {path.split("/").filter(Boolean).at(-1) || path}
-              </button>
-            ))}
-          </div>
-          {project ? (
-            <div className="projectMeta">
-              <span>{project.realpath}</span>
-              {project.git?.insideWorkTree ? (
-                <span>
-                  <GitBranch size={14} />
-                  {project.git.branch || "detached"}
-                </span>
-              ) : null}
+          <button
+            aria-haspopup="dialog"
+            className="directorySummaryButton"
+            type="button"
+            onClick={() => {
+              setMobilePanel(null);
+              setDirectoryPickerOpen(true);
+            }}
+          >
+            <span className="directorySummaryIcon">
+              <Folder aria-hidden="true" size={18} />
+            </span>
+            <span className="directorySummaryText">
+              <strong title={project?.realpath || cwd}>{currentProjectLabel}</strong>
+              <small title={project?.realpath || cwd}>{project?.realpath || cwd || "Choose a directory"}</small>
+            </span>
+            <ChevronRight aria-hidden="true" size={16} />
+          </button>
+
+          {project?.git?.insideWorkTree ? (
+            <div className="directoryContextRow">
+              <span className="directoryBranch" title={project.git.branch || "Detached HEAD"}>
+                <GitBranch aria-hidden="true" size={12} />
+                {project.git.branch || "detached"}
+              </span>
             </div>
           ) : null}
-          {projectError ? <p className="errorText">{projectError}</p> : null}
-            <button className="wideButton" type="button" onClick={() => startThread()} disabled={wsState !== "online" || !cwd.trim()}>
-            <SquarePen size={17} />
-            {wsState === "online" ? "New session" : "Connecting to Codex"}
-          </button>
+
+          {projectError ? <p className="errorText" role="alert">{projectError}</p> : null}
         </section>
+
+        <AgentFleet
+          sections={fleetSections}
+          selectedKey={threadKey(selectedThread)}
+          loadingKey={historyLoadingThreadId}
+          onSelect={selectFleetThread}
+          onTogglePin={togglePinnedThread}
+          onRename={renameFleetThread}
+          onClose={closeFleetThread}
+          onManage={manageFleetThread}
+        />
 
 	        <section className="threadHeader">
 	          <span>
-	            <History size={16} />
+            <History aria-hidden="true" size={16} />
 	            Sessions
 	          </span>
 	          <div className="threadHeaderActions">
-            <button title="Manage sessions" type="button" onClick={openSessionManager}>
-              <ListTree size={16} />
+            <button
+              aria-label="New session"
+              disabled={!cwd.trim()}
+              title="New session"
+              type="button"
+              onClick={beginDraftSession}
+            >
+              <SquarePen aria-hidden="true" size={16} />
             </button>
-            <button title="Refresh sessions" type="button" onClick={() => loadThreads()} disabled={wsState !== "online"}>
-              <RefreshCcw size={16} />
-	            </button>
+            <button aria-label="Manage sessions" title="Manage sessions" type="button" onClick={openSessionManager}>
+              <ListTree aria-hidden="true" size={16} />
+            </button>
+            <button
+              aria-label="Refresh sessions"
+              disabled={wsState !== "online"}
+              title="Refresh sessions"
+              type="button"
+              onClick={() => refreshSessionState("manual").catch((error) => setNotice(error.message))}
+            >
+              <RefreshCcw aria-hidden="true" size={16} />
+            </button>
 	          </div>
 	        </section>
 
@@ -3824,36 +4869,38 @@ export default function Home() {
 	
         <div className="threadList">
           {orderedThreads.length === 0 ? <p className="muted">No sessions yet.</p> : null}
+          {orderedThreads.length > 0 && listedThreads.length === 0 ? <p className="muted">Live sessions stay in Now until they finish.</p> : null}
           {threadLayout === "recent" ? (
             <div className="threadGroupItems">
-              {orderedThreads.map((thread) => {
-                const kind = threadStatusKind(thread, activeTurnIdsByThread, waitingThreadIds);
+              {listedThreads.map((thread) => {
+                const key = threadKey(thread);
+                const fleetThread = fleetByKey.get(key);
+                const loadingHistory = historyLoadingThreadId === key;
+                if (!fleetThread) return null;
                 return (
-                  <button
-                    className={`threadItem statusKind-${kind} ${selectedThread?.id === thread.id ? "selected" : ""}`}
-                    key={thread.id}
-                    type="button"
-                    onClick={() => resumeThread(thread).catch((error) => setNotice(error.message))}
-                  >
-                    <span>
-                      <span className={`threadDot ${kind}`} aria-label={`status ${kind}`} />
-                      {thread.name || thread.preview || "Untitled session"}
-                    </span>
-                    <small>{formatTime(thread.updatedAt)}</small>
-                    <small title={thread.cwd}>{directoryLabel(thread.cwd)}</small>
-                    <small>{statusLabel(thread.status)}</small>
-                  </button>
+                  <FleetSessionRow
+                    key={key}
+                    thread={fleetThread}
+                    selected={threadKey(selectedThread) === key}
+                    loading={loadingHistory}
+                    showDirectory
+                    onSelect={selectFleetThread}
+                    onTogglePin={togglePinnedThread}
+                    onRename={renameFleetThread}
+                    onClose={closeFleetThread}
+                    onManage={manageFleetThread}
+                  />
                 );
               })}
             </div>
-          ) : threadGroups.map((group) => {
+          ) : listedThreadGroups.map((group) => {
             const collapsed = collapsedThreadGroupSet.has(group.cwd);
             const runningCount = group.threads.reduce(
-              (sum, thread) => sum + (threadStatusKind(thread, activeTurnIdsByThread, waitingThreadIds) === "running" ? 1 : 0),
+              (sum, thread) => sum + (deriveSessionPhase(thread, activeTurnIdsByThread, waitingThreadIds) === "running" ? 1 : 0),
               0
             );
             const waitingCount = group.threads.reduce(
-              (sum, thread) => sum + (threadStatusKind(thread, activeTurnIdsByThread, waitingThreadIds) === "waiting" ? 1 : 0),
+              (sum, thread) => sum + (deriveSessionPhase(thread, activeTurnIdsByThread, waitingThreadIds) === "waiting" ? 1 : 0),
               0
             );
             const isDragging = group.pinned && draggingPinnedDir === group.cwd;
@@ -3907,6 +4954,7 @@ export default function Home() {
                     ) : null}
                   </button>
                   <button
+                    aria-label={group.pinned ? "Unpin directory" : "Pin directory"}
                     className="threadGroupPin"
                     title={group.pinned ? "Unpin directory" : "Pin directory"}
                     type="button"
@@ -3917,24 +4965,26 @@ export default function Home() {
                 </div>
                 {collapsed ? null : (
                   <>
-                    <div className="threadGroupPath">{group.cwd}</div>
+                    <div className="threadGroupPath" dir="ltr" title={group.cwd} translate="no">{group.cwd}</div>
                     <div className="threadGroupItems">
                       {group.threads.map((thread) => {
-                        const kind = threadStatusKind(thread, activeTurnIdsByThread, waitingThreadIds);
+                        const key = threadKey(thread);
+                        const fleetThread = fleetByKey.get(key);
+                        const loadingHistory = historyLoadingThreadId === key;
+                        if (!fleetThread) return null;
                         return (
-                          <button
-                            className={`threadItem statusKind-${kind} ${selectedThread?.id === thread.id ? "selected" : ""}`}
-                            key={thread.id}
-                            type="button"
-                            onClick={() => resumeThread(thread).catch((error) => setNotice(error.message))}
-                          >
-                            <span>
-                              <span className={`threadDot ${kind}`} aria-label={`status ${kind}`} />
-                              {thread.name || thread.preview || "Untitled session"}
-                            </span>
-                            <small>{formatTime(thread.updatedAt)}</small>
-                            <small>{statusLabel(thread.status)}</small>
-                          </button>
+                          <FleetSessionRow
+                            key={key}
+                            thread={fleetThread}
+                            selected={threadKey(selectedThread) === key}
+                            loading={loadingHistory}
+                            showDirectory={false}
+                            onSelect={selectFleetThread}
+                            onTogglePin={togglePinnedThread}
+                            onRename={renameFleetThread}
+                            onClose={closeFleetThread}
+                            onManage={manageFleetThread}
+                          />
                         );
                       })}
                     </div>
@@ -3948,80 +4998,169 @@ export default function Home() {
         )}
       </aside>
 
-      <section className="workspace">
+      <section className={`workspace workspace-${workspaceView}`}>
           <header className="topbar">
             <div className="topbarTitle">
-              <strong>{threadTitle(selectedThread)}</strong>
-              <span>{selectedThread?.cwd || cwd || "No server directory selected"}</span>
-              <div className="topbarMeta">
-                {project?.git?.insideWorkTree ? (
-                  <span>
-                    <GitBranch size={13} />
-                    {project.git.branch || "detached"}
-                  </span>
-                ) : null}
-                {sessionModel ? <span>{sessionModel}</span> : null}
-                {runtimeSettings.reasoningEffort ? (
-                  <span>
-                    <Sparkles size={13} />
-                    {runtimeSettings.reasoningEffort}
-                  </span>
-                ) : null}
-                <span className={`fastModeMeta ${fastModeEnabled ? "enabled" : ""}`} title={`Service tier: ${serviceTierText}`}>
-                  {fastModeText}
+              <div className="topbarTitleRow">
+                <span className="topbarTitleText">
+                  <strong>{threadTitle(selectedThread)}</strong>
+                  {selectedThread ? (
+                    <button
+                      aria-label="Rename session"
+                      className="topbarRename"
+                      title="Rename session"
+                      type="button"
+                      onClick={() => openCommandPanel("rename").catch((error) => setNotice(error instanceof Error ? error.message : String(error), "error"))}
+                    >
+                      <Pencil aria-hidden="true" size={15} />
+                    </button>
+                  ) : null}
                 </span>
-                <span>{modeLabel(mode)}</span>
-                {selectedThread ? <span>{statusLabel(selectedThread.status)}</span> : null}
-                {usageLabel ? (
-                  <span>
-                    <BarChart3 size={13} />
-                    {usageLabel}
+                {isCursorProvider || selectedProvider === "claude" ? (
+                  <span className="sessionModelInline" title={`${providerName(selectedProvider)} model: ${displayedModel || "auto"}`}>
+                    {displayedModel || "auto"}
                   </span>
                 ) : null}
+                <nav className="mobileSessionStepper" aria-label="Switch session">
+                  <button
+                    aria-label={newerThread ? `Newer session: ${threadTitle(newerThread)}` : "No newer session"}
+                    disabled={!newerThread}
+                    title={newerThread ? `Newer: ${threadTitle(newerThread)}` : "No newer session"}
+                    type="button"
+                    onClick={() => selectAdjacentThread(newerThread)}
+                  >
+                    <ChevronLeft aria-hidden="true" size={16} />
+                  </button>
+                  <span
+                    aria-label={selectedThreadIndex >= 0 ? `Session ${selectedThreadIndex + 1} of ${orderedThreads.length}` : `${orderedThreads.length} sessions`}
+                    className="mobileSessionPosition"
+                  >
+                    {selectedThreadIndex >= 0 ? selectedThreadIndex + 1 : "–"}/{orderedThreads.length}
+                  </span>
+                  <button
+                    aria-label={olderThread ? `Older session: ${threadTitle(olderThread)}` : "No older session"}
+                    disabled={!olderThread}
+                    title={olderThread ? `Older: ${threadTitle(olderThread)}` : "No older session"}
+                    type="button"
+                    onClick={() => selectAdjacentThread(olderThread)}
+                  >
+                    <ChevronRight aria-hidden="true" size={16} />
+                  </button>
+                </nav>
               </div>
-            </div>
+              <div className="topbarMeta">
+                <span className="topbarPath" dir="ltr" title={selectedThread?.cwd || cwd || undefined} translate="no">
+                  {selectedThread?.cwd || cwd || "No server directory selected"}
+                </span>
+                {selectedThread && sessionExecutionState.phase !== "idle" ? (
+                  <span className={`sessionState state-${sessionExecutionState.phase}`}>
+                    {threadStatusText(sessionExecutionState.phase)}
+                  </span>
+                ) : null}
+                {isCursorProvider ? (
+                  <span className="unsafeModeMeta" title={cursorExecutionModeDescription}>{cursorExecutionModeLabel}</span>
+                ) : (
+                  <>
+                    <span className="sessionModelMeta" title={`Model: ${displayedModel || "server default"}`}>
+                      {displayedModel || "server default"}
+                    </span>
+                    {supportsReasoning ? (
+                      <span className="sessionThinkingMeta" title={`Thinking effort: ${displayedReasoning || "default"}`}>
+                        Thinking {displayedReasoning || "default"}
+                      </span>
+                    ) : null}
+                    {supportsServiceTier ? (
+                      <span
+                        className={`fastModeMeta ${displayedFastMode ? "enabled" : ""}`}
+                        data-service-tier={displayedServiceTier}
+                        title={`${displayedFastMode ? "Fast mode enabled" : "Fast mode disabled"} · Service tier: ${displayedServiceTier}`}
+                      >
+                        {fastModeLabel(displayedServiceTier)} mode
+                      </span>
+                    ) : null}
+                  </>
+                )}
+              </div>
+          </div>
           <div className="topActions">
-            <span className={`statusPill ${wsState}`}>{wsState}</span>
-            <div className="modeSwitch">
-              <button className={mode === "default" ? "active" : ""} type="button" onClick={() => updateRuntimeSettings({ mode: "default" })}>
-                Agent
-              </button>
-              <button className={mode === "plan" ? "active" : ""} type="button" onClick={() => updateRuntimeSettings({ mode: "plan" })}>
-                Plan
-              </button>
-            </div>
-            <button title="Logout" type="button" onClick={logout}>
-              <LogOut size={17} />
+            {isCursorProvider ? (
+              <>
+                <SessionModelPill
+                  model={displayedModel || "auto"}
+                  onClick={() => openCommandPanel("model").catch((error) => setNotice(error instanceof Error ? error.message : String(error), "error"))}
+                />
+                <CursorUsagePill usage={cursorUsage} />
+              </>
+            ) : selectedProvider === "claude" ? (
+              <ClaudeUsagePill rateLimit={claudeRateLimit} />
+            ) : (
+              <UsagePill
+                label="Codex"
+                rateLimit={codexRateLimit}
+                windowTitle={`Standard Codex bucket · ${formatCodexPercent((codexRateLimit?.windowDurationMins || 0) / 1_440)} day window`}
+              />
+            )}
+            <span className={`statusPill ${wsState}`}>{connectionLabel(wsState)}</span>
+            <button aria-label="Log out" title="Log out" type="button" onClick={logout}>
+              <LogOut aria-hidden="true" size={17} />
             </button>
           </div>
         </header>
 
-        <div className="turnList">
-          {groupedRounds.length === 0 ? (
-            <div className="emptyState">
-              <Sparkles size={34} />
-              <h2>{selectedThread ? "New session ready" : "Start or resume a Codex session"}</h2>
-              <p>
-                {selectedThread
-                  ? "Send the first task below."
-                  : wsState === "online"
-                  ? "Pick a server directory, choose Chat or Plan, then send a task."
-                  : "Codex is reconnecting. You can browse directories while it connects."}
-              </p>
-            </div>
-          ) : (
-            groupedRounds.map((turn, index) => {
-              const active = turn.pending || Boolean(activeTurnItemIds && turn.itemIds.some((id) => activeTurnItemIds.has(id)));
-              return <TurnPanel active={active} defaultOpen={index === 0} key={turn.id} turn={turn} />;
-            })
-          )}
-        </div>
+        <nav className="workspaceTabs" aria-label="Workspace view">
+          <button aria-pressed={workspaceView === "chat"} className={workspaceView === "chat" ? "active" : ""} type="button" onClick={() => setWorkspaceView("chat")}>
+            <MessageSquare aria-hidden="true" size={15} />
+            Chat
+          </button>
+          <button aria-pressed={workspaceView === "files"} className={workspaceView === "files" ? "active" : ""} type="button" onClick={() => setWorkspaceView("files")}>
+            <FolderOpen aria-hidden="true" size={15} />
+            Files
+          </button>
+          <button
+            aria-pressed={workspaceView === "diff"}
+            className={workspaceView === "diff" ? "active" : ""}
+            type="button"
+            onClick={() => {
+              setWorkspaceDiffKind("working");
+              setWorkspaceView("diff");
+            }}
+          >
+            <FileDiff aria-hidden="true" size={15} />
+            Changes
+            {workspaceDiff?.hasChanges ? <span>{workspaceDiff.files.length}</span> : null}
+          </button>
+          <button aria-pressed={workspaceView === "runtime"} className={workspaceView === "runtime" ? "active" : ""} type="button" onClick={() => setWorkspaceView("runtime")}>
+            <ShieldCheck aria-hidden="true" size={15} />
+            Runtime
+          </button>
+        </nav>
+
+        <div className={`workbench ${workspaceView === "chat" ? "contextClosed" : "contextOpen"}`}>
+          <section className="chatColumn">
+          <ConversationPane
+            threadKey={currentThreadKey}
+            provider={selectedThreadProvider}
+            providerLabel={providerName(selectedProvider)}
+            hasThread={Boolean(selectedThread)}
+            activeTurnId={activeTurnId}
+            historyLoading={Boolean(historyLoadingThreadId && currentThreadKey === historyLoadingThreadId)}
+            showAllHistory={showAllHistory}
+            onShowAllHistory={onShowAllHistory}
+            diagnostic={gatewayDiagnostic}
+            onOpenDiff={openTurnDiff}
+            wsOnline={wsState === "online"}
+            startProviders={startProviders}
+            selectedProvider={selectedProvider}
+            sessionCreating={sessionCreating}
+            onStartProvider={onStartProvider}
+            onProviderDetails={onProviderDetails}
+          />
 
         {notice ? (
-          <div className="notice">
+          <div className={`notice notice-${noticeTone}`} role={noticeTone === "error" ? "alert" : "status"} aria-live={noticeTone === "error" ? "assertive" : "polite"}>
             <span>{notice}</span>
-            <button type="button" onClick={() => setNotice("")}>
-              <X size={15} />
+            <button aria-label="Dismiss notification" type="button" onClick={() => setNotice("")}>
+              <X aria-hidden="true" size={15} />
             </button>
           </div>
         ) : null}
@@ -4040,254 +5179,198 @@ export default function Home() {
           </div>
         ) : null}
 
-        <form className="composer" onSubmit={submitPrompt}>
-            <textarea
-              ref={promptRef}
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              onPaste={(event) => {
-                const imageFiles = [...event.clipboardData.files].filter((file) => file.type.startsWith("image/"));
-                if (!imageFiles.length) return;
-                event.preventDefault();
-                addImageFiles(imageFiles);
-              }}
-            onKeyDown={(event) => {
-              if (event.nativeEvent.isComposing) return;
-              if (slashOpen) {
-                if (event.key === "ArrowDown") {
-                  event.preventDefault();
-                  setSlashIndex((current) => (slashMatches.length ? (current + 1) % slashMatches.length : 0));
-                  return;
-                }
-                if (event.key === "ArrowUp") {
-                  event.preventDefault();
-                  setSlashIndex((current) =>
-                    slashMatches.length ? (current - 1 + slashMatches.length) % slashMatches.length : 0
-                  );
-                  return;
-                }
-                if ((event.key === "Tab" || event.key === "Enter") && selectedSlashCommand && !event.shiftKey) {
-                  event.preventDefault();
-                  setPrompt("");
-                  executeSlashCommand(selectedSlashCommand);
-                  return;
-                }
-              }
-              if (event.key === "Escape") {
-                event.preventDefault();
-                if (slashOpen) setPrompt("");
-                else if (activeTurnId) interrupt().catch((error) => setNotice(error.message));
-                else if (prompt) setPrompt("");
-                return;
-              }
-              if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-                event.preventDefault();
-                if (event.shiftKey && activeTurnId) {
-                  submitSteerPrompt();
-                  return;
-                }
-                event.currentTarget.form?.requestSubmit();
-              }
-            }}
-            placeholder={activeTurnId ? "Queue the next task or steer the active turn..." : "Send a task to Codex..."}
-            rows={3}
-          />
-            {slashOpen ? (
-              <SlashPalette
-                commands={slashMatches}
-                context={slashContext}
-                selectedIndex={selectedSlashIndex}
-                onHover={setSlashIndex}
-                onSelect={(command) => {
-                  setPrompt("");
-                  executeSlashCommand(command);
-                }}
-              />
-            ) : null}
-            <ShortcutHints
-            items={[
-              { keys: ["Enter"], label: "newline" },
-              { keys: ["Ctrl/Cmd", "Enter"], label: activeTurnId ? "queue" : "send" },
-              ...(activeTurnId ? [{ keys: ["Ctrl/Cmd", "Shift", "Enter"], label: "steer" }] : []),
-              { keys: ["Esc"], label: activeTurnId ? "stop" : "clear" }
-              ]}
-            />
-            <input
-              accept="image/*"
-              className="hiddenFileInput"
-              multiple
-              ref={fileInputRef}
-              type="file"
-              onChange={(event) => {
-                addImageFiles([...(event.currentTarget.files || [])]);
-                event.currentTarget.value = "";
-              }}
-            />
-            {attachments.length ? (
-              <div className="attachmentTray">
-                {attachments.map((attachment) => (
-                  <div className="attachmentChip" key={attachment.id}>
-                    <img alt="" src={attachment.url} />
-                    <span>
-                      <strong>{attachment.name}</strong>
-                      <small>{formatBytes(attachment.size)}</small>
-                    </span>
-                    <button type="button" onClick={() => removeAttachment(attachment.id)} title="Remove image">
-                      <X size={14} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-          {selectedThread && selectedQueuedPrompts.length ? (
-            <section className="promptQueue">
-              <div className="promptQueueHeader">
-                <strong>{selectedQueuedPrompts.length} queued</strong>
-                <button type="button" onClick={() => clearQueuedPrompts(selectedThread.id)}>
-                  <X size={15} />
-                  Clear queue
-                </button>
-              </div>
-              <div className="promptQueueList">
-                {selectedQueuedPrompts.map((queuedPrompt, index) => (
-                  <div className="queuedPrompt" key={queuedPrompt.id}>
-                    <span className="queuePosition">{index + 1}</span>
-                    <div className="queuedPromptText">
-                      <strong>{compactText(queuedPrompt.text, 140)}</strong>
-                      <small>{formatTime(queuedPrompt.createdAt)}</small>
-                    </div>
-                    <button type="button" onClick={() => removeQueuedPrompt(selectedThread.id, queuedPrompt.id)}>
-                      <X size={14} />
-                      Remove
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </section>
-          ) : null}
-          <div className="composerActions">
-              <div className="composerSecondaryActions">
-                <button type="button" onClick={() => fileInputRef.current?.click()}>
-                  <Paperclip size={17} />
-                  Image
-                </button>
-                <button type="button" onClick={closeThread} disabled={!selectedThread}>
-                  <X size={17} />
-                Close
-              </button>
-              <button type="button" onClick={archiveThread} disabled={!selectedThread}>
-                <Archive size={17} />
-                Archive
-              </button>
-            </div>
-            <div className="composerPrimaryActions">
-              {activeTurnId ? (
-                <button className="dangerButton" type="button" onClick={interrupt}>
-                  <CircleStop size={17} />
-                  Stop
-                </button>
-              ) : null}
-              {activeTurnId ? (
-                <button type="button" onClick={submitSteerPrompt} disabled={!prompt.trim()}>
-                  <ChevronRight size={17} />
-                  Steer now
-                </button>
-              ) : null}
-              {mode === "plan" && selectedThread ? (
-                <button type="button" onClick={runPlan} disabled={wsState !== "online"}>
-                  <Play size={17} />
-                  Execute plan
-                </button>
-              ) : null}
-              <button className="primaryButton" type="submit" disabled={wsState !== "online"}>
-                <Send size={17} />
-                {activeTurnId ? "Queue" : "Send"}
-              </button>
-            </div>
-          </div>
-        </form>
-      </section>
+        <Composer
+          ref={composerRef}
+          threadKey={currentThreadKey}
+          initialDraft={draftsRef.current[currentThreadKey] || ""}
+          providerLabel={providerName(selectedProvider)}
+          wsState={wsState}
+          submitting={composerSubmitting}
+          executionTransitioning={planSubmitting}
+          executionState={sessionExecutionState}
+          sessionCreating={sessionCreating}
+          supportsSteer={supportsSteer}
+          uploadsInProgress={uploadsInProgress}
+          currentQueuePaused={currentQueuePaused}
+          attachments={attachments}
+          fileContexts={fileContexts}
+          fileMentions={fileMentions}
+          queueSummary={currentQueueSummary}
+          queueAction={queueAction}
+          slashContext={slashContext}
+          onDraftChange={(value) => {
+            draftsRef.current[currentThreadKey] = value;
+          }}
+          onSubmit={submitPrompt}
+          onSteer={submitSteerPrompt}
+          onInterrupt={() => interrupt().catch((error) => setNotice(error instanceof Error ? error.message : String(error)))}
+          onRunPlan={() => executeCurrentPlan().catch((error) => setNotice(error instanceof Error ? error.message : String(error)))}
+          onModeChange={(nextMode) => selectSessionMode(nextMode).catch((error) => setNotice(error.message))}
+          onSlash={(command) => executeSlashCommand(command).catch((error) => setNotice(error instanceof Error ? error.message : String(error)))}
+          onPickFiles={addFiles}
+          onRemoveAttachment={removeAttachment}
+          onRemoveFileContext={(id) => setFileContexts((current) => removeChip(current, id))}
+          onOpenFileContext={openFileContext}
+          onAtQuery={setAtQuery}
+          onPickMention={(hit) => setFileContexts((current) => upsertChip(current, { path: hit.path, startLine: null, endLine: null, text: "" }))}
+          onMentionsParsed={applyParsedMentions}
+          onRetryQueue={retryQueuedPrompt}
+          onRemoveQueue={removeQueuedPrompt}
+        />
 
-      <aside className="inspector">
-        <section className="panel">
-          <h2>
-            <ListTree size={17} />
-            Active requests
-          </h2>
-          {pendingRequests.length === 0 ? <p className="muted">No pending approval or question.</p> : null}
-            {pendingRequests.map((request) => (
-              <button className="requestChip" key={String(request.id)} type="button">
-                <MessageSquare size={15} />
-                <span>
-                  <strong>{approvalTitle(request)}</strong>
-                  <small>{compactText(approvalSummary(request), 80)}</small>
-                </span>
-              </button>
-            ))}
-        </section>
-      </aside>
+          </section>
+
+          {workspaceView !== "chat" ? (
+            <aside className={`contextPane context-${workspaceView}`} aria-label={`${workspaceView} context`}>
+              <button
+                aria-label="Resize context panel"
+                className={`contextResizeHandle ${contextResizing ? "active" : ""}`}
+                type="button"
+                onPointerDown={startContextResize}
+              />
+              <header className="contextHeader">
+                <strong>{workspaceView === "files" ? "Files" : workspaceView === "diff" ? "Changes" : "Runtime"}</strong>
+                <button aria-label="Close context" title="Close context" type="button" onClick={() => setWorkspaceView("chat")}>
+                  <X aria-hidden="true" size={15} />
+                </button>
+              </header>
+              {workspaceView === "files" ? (
+                <ProjectFileWorkspace
+                  root={workspaceRoot}
+                  requestedPath={workspaceFileRequest}
+                  highlight={fileContextHighlight}
+                  maxUploadBytes={uploadMaxBytes}
+                  onRequestedPathHandled={clearWorkspaceFileRequest}
+                  onLineSelect={handleLineSelect}
+                />
+              ) : workspaceView === "diff" ? (
+                <section className="workspaceDiffView">
+                  <header className="workspaceDiffHeader">
+                    <span>
+                      <FileDiff aria-hidden="true" size={17} />
+                      <span>
+                        <strong>{workspaceDiffKind === "turn" ? "Turn changes" : "Working-tree changes"}</strong>
+                        <small>{workspaceDiff?.root || workspaceRoot || "No project selected"}</small>
+                      </span>
+                    </span>
+                    <span>
+                      {workspaceDiffKind === "turn" ? <button type="button" onClick={refreshWorkspaceDiff}>Show working tree</button> : null}
+                      {workspaceDiff?.diff ? <button type="button" onClick={() => navigator.clipboard?.writeText(workspaceDiff.diff)}><Copy aria-hidden="true" size={14} /> Copy diff</button> : null}
+                      <button type="button" onClick={refreshWorkspaceDiff} disabled={workspaceDiffLoading}><RefreshCcw aria-hidden="true" size={14} /> Refresh</button>
+                    </span>
+                  </header>
+                  {workspaceDiffLoading ? <p className="workspaceLoading">Loading diff…</p> : null}
+                  {workspaceDiffError ? <div className="workspaceDiffEmpty"><FileDiff aria-hidden="true" size={30} /><h2>Diff is unavailable</h2><p>{workspaceDiffError}</p></div> : null}
+                  {!workspaceDiffLoading && !workspaceDiffError ? <ProjectDiffPanel data={workspaceDiff} onOpenFile={openWorkspaceFile} /> : null}
+                </section>
+              ) : (
+                <RuntimePanel
+                  data={{
+                    provider: providerName(selectedThread ? selectedThreadProvider : selectedProvider),
+                    version: selectedThreadProviderStatus.version || "version unknown",
+                    connection: connectionLabel(wsState),
+                    cwd: workspaceRoot,
+                    threadId: selectedThread ? nativeThreadId(selectedThread) : "",
+                    mode: modeLabel(mode),
+                    model: displayedModel || "server default",
+                    reasoning: supportsReasoning ? displayedReasoning || "server default" : undefined,
+                    serviceTier: supportsServiceTier ? displayedServiceTier : undefined,
+                    usage: isCursorProvider
+                      ? (cursorUsage ? formatCursorUsageLabel(cursorUsage) : undefined)
+                      : (usageLabel || (selectedProvider === "claude"
+                        ? (claudeRateLimit ? formatClaudeUsageLabel(claudeRateLimit) : undefined)
+                        : (codexRateLimit ? `Codex ${formatCodexPercent(remainingCodexPercent(codexRateLimit.usedPercent))}% remaining` : undefined))),
+                    approval: supportsApprovals ? shortJson(runtimeSettings.approvalPolicy) : undefined,
+                    sandbox: supportsApprovals ? runtimeSettings.sandboxMode || "server default" : undefined,
+                    warning: isCursorProvider ? cursorExecutionModeDescription : undefined,
+                    supportsPermissions: supportsApprovals,
+                    supportsMcp: selectedProvider === "codex"
+                  }}
+                  onOpenProvider={() => openCommandPanel("provider").catch((error) => setNotice(error.message, "error"))}
+                  onOpenModel={() => openCommandPanel("model").catch((error) => setNotice(error.message, "error"))}
+                  onOpenPermissions={() => openCommandPanel("permissions").catch((error) => setNotice(error.message, "error"))}
+                  onOpenMcp={() => openCommandPanel("mcp").catch((error) => setNotice(error.message, "error"))}
+                  onOpenStatus={() => openCommandPanel("status").catch((error) => setNotice(error.message, "error"))}
+                />
+              )}
+            </aside>
+          ) : null}
+        </div>
+      </section>
 
       {sessionManagerOpen ? renderSessionManager() : null}
       {commandPanel ? renderCommandPanel() : null}
-      {activeRequest ? <ServerRequestDialog request={activeRequest} onAnswer={answerServerRequest} /> : null}
+      {activeRequest && providerCapability(providerStatus(bootstrap, activeRequestProvider), "approvals") ? (
+        <ServerRequestDialog request={activeRequest} onAnswer={answerServerRequest} />
+      ) : null}
       {directoryPickerOpen ? (
         <DirectoryPicker
           initialPath={cwd}
           pinnedDirs={pinnedDirs}
           recentDirs={recentDirs}
           onClose={() => setDirectoryPickerOpen(false)}
-          onSelect={useDirectory}
+          onSelect={useResolvedDirectory}
           onTogglePinned={togglePinnedDirectory}
         />
       ) : null}
       <nav className="bottomTabBar" aria-label="Mobile navigation">
         <button
-          className={mobilePanel === "project" ? "active" : ""}
+          aria-label="Sessions"
+          className={mobilePanel === "sessions" ? "active" : ""}
           type="button"
           onClick={() => {
             setCommandPanel(null);
             setSessionManagerOpen(false);
-            setMobilePanel((current) => (current === "project" ? null : "project"));
+            setMobilePanel((current) => (current === "sessions" ? null : "sessions"));
           }}
         >
-          <FolderOpen size={18} />
-          <span>Project</span>
+          <History aria-hidden="true" size={18} />
+          <span>Sessions</span>
+          <small>{threads.length}</small>
         </button>
         <button
-          className={!mobilePanel && !sessionManagerOpen && !commandPanel ? "active" : ""}
+          aria-label="Chat"
+          className={workspaceView === "chat" && !mobilePanel && !sessionManagerOpen && !commandPanel ? "active" : ""}
           type="button"
           onClick={() => {
             setMobilePanel(null);
             setCommandPanel(null);
             setSessionManagerOpen(false);
+            setWorkspaceView("chat");
           }}
         >
-          <MessageSquare size={18} />
+          <MessageSquare aria-hidden="true" size={18} />
           <span>Chat</span>
         </button>
         <button
-          className={sessionManagerOpen ? "active" : ""}
+          aria-label="Files"
+          className={workspaceView === "files" && !mobilePanel ? "active" : ""}
           type="button"
           onClick={() => {
             setMobilePanel(null);
             setCommandPanel(null);
-            openSessionManager();
+            setSessionManagerOpen(false);
+            setWorkspaceView("files");
           }}
         >
-          <History size={18} />
-          <span>{threads.length || "Sessions"}</span>
+          <FolderOpen aria-hidden="true" size={18} />
+          <span>Files</span>
         </button>
         <button
-          className={commandPanel ? "active" : ""}
+          aria-label="Changes"
+          className={workspaceView === "diff" && !mobilePanel ? "active" : ""}
           type="button"
           onClick={() => {
             setMobilePanel(null);
+            setCommandPanel(null);
             setSessionManagerOpen(false);
-            openCommandPanel("status").catch((error) => setNotice(error.message));
+            setWorkspaceDiffKind("working");
+            setWorkspaceView("diff");
           }}
         >
-          <ShieldCheck size={18} />
-          <span>Status</span>
+          <FileDiff aria-hidden="true" size={18} />
+          <span>Changes</span>
+          {workspaceDiff?.hasChanges ? <small>{workspaceDiff.files.length}</small> : null}
         </button>
       </nav>
     </main>
@@ -4306,7 +5389,7 @@ function DirectoryPicker({
   pinnedDirs: string[];
   recentDirs: string[];
   onClose: () => void;
-  onSelect: (path: string) => void;
+  onSelect: (project: ProjectInfo) => void;
   onTogglePinned: (path: string) => void;
 }) {
   const [path, setPath] = useState(initialPath);
@@ -4314,98 +5397,265 @@ function DirectoryPicker({
   const [suggestions, setSuggestions] = useState<ProjectSuggestion[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [selecting, setSelecting] = useState(false);
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const loadRequestRef = useRef(0);
+  const selectRequestRef = useRef(0);
   const pinnedDirSet = useMemo(() => new Set(pinnedDirs.map(normalizeDirectoryPath)), [pinnedDirs]);
 
   async function load(target: string) {
+    const requestId = ++loadRequestRef.current;
     setLoading(true);
     setError("");
     try {
       const next = await getJson<ProjectDirectoryListing>(`/api/projects/list?cwd=${encodeURIComponent(target)}`);
+      if (requestId !== loadRequestRef.current) return null;
       setListing(next);
       setPath(next.realpath);
+      return next;
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
+      if (requestId === loadRequestRef.current) {
+        setError(directoryErrorMessage(loadError));
+      }
+      return null;
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestRef.current) setLoading(false);
     }
   }
 
   useEffect(() => {
     getJson<{ data: ProjectSuggestion[] }>("/api/projects/suggestions")
       .then((response) => setSuggestions(response.data))
-      .catch((suggestionError) =>
-        setError(suggestionError instanceof Error ? suggestionError.message : String(suggestionError))
-      );
-    load(initialPath);
+      .catch(() => setSuggestions([]));
+    if (initialPath.trim()) load(initialPath);
   }, [initialPath]);
 
   const quickPaths = [
-    ...pinnedDirs.map((item) => ({ label: directoryLabel(item), path: item })),
-    ...recentDirs.map((item) => ({ label: item.split("/").filter(Boolean).at(-1) || item, path: item })),
-    ...suggestions
-  ].filter((item, index, all) => all.findIndex((candidate) => candidate.path === item.path) === index);
-  const pathPinned = pinnedDirSet.has(normalizeDirectoryPath(path));
+    ...pinnedDirs.map((item) => ({ label: directoryLabel(item), path: item, kind: "Pinned" })),
+    ...recentDirs.map((item) => ({ label: directoryLabel(item), path: item, kind: "Recent" })),
+    ...suggestions.map((item) => ({ ...item, kind: "Suggested" }))
+  ].filter(
+    (item, index, all) =>
+      all.findIndex((candidate) => normalizeDirectoryPath(candidate.path) === normalizeDirectoryPath(item.path)) === index
+  );
+  const activePath = listing?.realpath || path;
+  const pathPinned = pinnedDirSet.has(normalizeDirectoryPath(activePath));
+  const breadcrumbs = useMemo(() => {
+    const target = listing?.realpath || path;
+    if (!target.startsWith("/")) return [{ label: target, path: target }];
+    const segments = target.split("/").filter(Boolean);
+    return [
+      { label: "/", path: "/" },
+      ...segments.map((segment, index) => ({
+        label: segment,
+        path: `/${segments.slice(0, index + 1).join("/")}`
+      }))
+    ];
+  }, [listing?.realpath, path]);
+
+  useEffect(() => {
+    dialogRef.current?.focus();
+  }, []);
+
+  function closePicker() {
+    loadRequestRef.current += 1;
+    selectRequestRef.current += 1;
+    onClose();
+  }
+
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    closePicker();
+  }
+
+  async function selectDirectory() {
+    const requestId = ++selectRequestRef.current;
+    setSelecting(true);
+    setError("");
+    try {
+      const selected = await getJson<ProjectInfo>(`/api/projects/resolve?cwd=${encodeURIComponent(path)}`);
+      if (requestId !== selectRequestRef.current) return;
+      selectRequestRef.current += 1;
+      onSelect(selected);
+    } catch (selectError) {
+      if (requestId === selectRequestRef.current) setError(directoryErrorMessage(selectError));
+    } finally {
+      if (requestId === selectRequestRef.current) setSelecting(false);
+    }
+  }
 
   return (
     <div className="dialogBackdrop">
-      <section className="dialog directoryDialog">
-        <header>
-          <h2>Choose server directory</h2>
-          <p>Select a project root on the server. You can still paste an absolute path manually.</p>
+      <section
+        aria-labelledby="directory-dialog-title"
+        aria-modal="true"
+        className="dialog directoryDialog"
+        onKeyDown={handleKeyDown}
+        ref={dialogRef}
+        role="dialog"
+        tabIndex={-1}
+      >
+        <header className="directoryDialogHeader">
+          <div>
+            <h2 id="directory-dialog-title">Choose server directory</h2>
+            <p>Open a project folder on this server, or paste its absolute path.</p>
+          </div>
+          <button aria-label="Close directory picker" title="Close" type="button" onClick={closePicker}>
+            <X aria-hidden="true" size={17} />
+          </button>
         </header>
 
-        <div className="directoryPathBar">
-          <input value={path} onChange={(event) => setPath(event.target.value)} spellCheck={false} />
-          <button type="button" onClick={() => onTogglePinned(path)}>
-            {pathPinned ? <PinOff size={17} /> : <Pin size={17} />}
-            {pathPinned ? "Unpin" : "Pin"}
+        <form
+          className="directoryPathBar"
+          onSubmit={(event) => {
+            event.preventDefault();
+            load(path);
+          }}
+        >
+          <label htmlFor="server-directory-path">Absolute path</label>
+          <div className="directoryPathInput">
+            <FolderOpen aria-hidden="true" size={16} />
+            <input
+              id="server-directory-path"
+              name="server-directory-path"
+              value={path}
+              onChange={(event) => setPath(event.target.value)}
+              placeholder="/home/user/project…"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
+          <button type="submit" disabled={loading || !path.trim()}>
+            {loading ? "Opening…" : "Open path"}
           </button>
-          <button type="button" onClick={() => load(path)} disabled={loading}>
-            <FolderOpen size={17} />
-            Open
-          </button>
-        </div>
+        </form>
 
         {quickPaths.length ? (
-          <div className="quickPathList">
-            {quickPaths.slice(0, 18).map((item) => (
-              <button type="button" key={item.path} onClick={() => load(item.path)}>
-                {pinnedDirSet.has(normalizeDirectoryPath(item.path)) ? <Pin size={15} /> : <HomeIcon size={15} />}
-                <span>{item.label}</span>
-              </button>
-            ))}
-          </div>
+          <section className="quickPathSection" aria-labelledby="quick-paths-title">
+            <div className="directorySectionHeading">
+              <h3 id="quick-paths-title">Quick access</h3>
+              <span>Pinned, recent & suggested</span>
+            </div>
+            <div className="quickPathList">
+              {quickPaths.slice(0, 12).map((item) => (
+                <button
+                  type="button"
+                  key={item.path}
+                  title={item.path}
+                  onClick={() => load(item.path)}
+                  disabled={loading}
+                >
+                  {item.kind === "Pinned" ? (
+                    <Pin aria-hidden="true" size={15} />
+                  ) : item.kind === "Recent" ? (
+                    <History aria-hidden="true" size={15} />
+                  ) : (
+                    <HomeIcon aria-hidden="true" size={15} />
+                  )}
+                  <span>
+                    <strong>{item.label}</strong>
+                    <small>{item.kind}</small>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>
         ) : null}
 
-        <div className="directoryList">
-          {listing?.parent ? (
-            <button type="button" className="directoryRow" onClick={() => load(listing.parent!)}>
-              <ArrowUp size={17} />
-              <span>..</span>
-              <small>{listing.parent}</small>
+        <section className="directoryBrowser" aria-labelledby="directory-browser-title">
+          <div className="directoryLocationHeader">
+            <div>
+              <span>Current directory</span>
+              <strong id="directory-browser-title" title={activePath}>
+                {directoryLabel(activePath)}
+              </strong>
+            </div>
+            <button
+              aria-pressed={pathPinned}
+              type="button"
+              onClick={() => onTogglePinned(activePath)}
+              disabled={loading || !listing}
+            >
+              {pathPinned ? <PinOff aria-hidden="true" size={15} /> : <Pin aria-hidden="true" size={15} />}
+              {pathPinned ? "Unpin" : "Pin"}
             </button>
-          ) : null}
-          {listing?.entries.map((entry) => (
-            <button type="button" className="directoryRow" key={entry.path} onClick={() => load(entry.path)}>
-              <Folder size={17} />
-              <span>{entry.name}</span>
-              <small>{entry.path}</small>
-            </button>
-          ))}
-          {!loading && listing?.entries.length === 0 ? <p className="muted">No child directories.</p> : null}
-          {loading ? <p className="muted">Loading directories...</p> : null}
-        </div>
+          </div>
+          <nav className="directoryBreadcrumbs" aria-label="Directory path">
+            {breadcrumbs.map((item, index) => (
+              <Fragment key={item.path}>
+                {index ? <ChevronRight aria-hidden="true" size={13} /> : null}
+                <button
+                  aria-current={index === breadcrumbs.length - 1 ? "location" : undefined}
+                  title={item.path}
+                  type="button"
+                  onClick={() => load(item.path)}
+                  disabled={loading}
+                >
+                  {item.label}
+                </button>
+              </Fragment>
+            ))}
+          </nav>
+          <div className="directoryList" aria-busy={loading}>
+            {listing?.parent ? (
+              <button
+                type="button"
+                className="directoryRow parent"
+                onClick={() => load(listing.parent!)}
+                disabled={loading}
+              >
+                <ArrowUp aria-hidden="true" size={17} />
+                <span>
+                  <strong>Parent directory</strong>
+                  <small title={listing.parent}>{listing.parent}</small>
+                </span>
+                <ChevronRight aria-hidden="true" size={15} />
+              </button>
+            ) : null}
+            {listing?.entries.map((entry) => (
+              <button
+                type="button"
+                className="directoryRow"
+                key={entry.path}
+                title={entry.path}
+                onClick={() => load(entry.path)}
+                disabled={loading}
+              >
+                <Folder aria-hidden="true" size={17} />
+                <span>
+                  <strong>{entry.name}</strong>
+                  <small>Folder</small>
+                </span>
+                <ChevronRight aria-hidden="true" size={15} />
+              </button>
+            ))}
+            {!loading && listing?.entries.length === 0 ? (
+              <p className="directoryEmpty">This directory has no child folders.</p>
+            ) : null}
+            {loading ? (
+              <p className="directoryLoading" role="status" aria-live="polite">Loading directories…</p>
+            ) : null}
+          </div>
+        </section>
 
-        {error ? <p className="errorText">{error}</p> : null}
+        {error ? (
+          <p className="errorText" role="alert">{error}</p>
+        ) : null}
 
         <footer>
-          <button type="button" onClick={onClose}>
-            <X size={17} />
+          <button type="button" onClick={closePicker}>
+            <X aria-hidden="true" size={17} />
             Cancel
           </button>
-          <button className="primaryButton" type="button" onClick={() => onSelect(path)}>
-            <Check size={17} />
-            Use this directory
+          <button
+            className="primaryButton"
+            type="button"
+            onClick={selectDirectory}
+            disabled={loading || selecting || !path.trim()}
+          >
+            <Check aria-hidden="true" size={17} />
+            {selecting ? "Selecting…" : "Use this directory"}
           </button>
         </footer>
       </section>
@@ -4413,621 +5663,11 @@ function DirectoryPicker({
   );
 }
 
-function SlashPalette({
-  commands,
-  context,
-  selectedIndex,
-  onHover,
-  onSelect
-}: {
-  commands: SlashCommand[];
-  context: { hasThread: boolean; activeTurn: boolean };
-  selectedIndex: number;
-  onHover: (index: number) => void;
-  onSelect: (command: SlashCommand) => void;
-}) {
-  return (
-    <div className="slashPalette" role="listbox" aria-label="Slash commands">
-      {commands.length ? (
-        commands.map((command, index) => {
-          const disabledReason = slashCommandDisabledReason(command, context);
-          return (
-            <button
-              aria-disabled={Boolean(disabledReason)}
-              className={`slashCommand ${index === selectedIndex ? "selected" : ""} ${disabledReason ? "disabled" : ""}`}
-              key={command.id}
-              role="option"
-              type="button"
-              onClick={() => onSelect(command)}
-              onMouseEnter={() => onHover(index)}
-            >
-              <span>
-                <strong>{command.label}</strong>
-                {command.aliases?.length ? <code>{command.aliases.map((alias) => `/${alias}`).join(", ")}</code> : null}
-              </span>
-              <small>{disabledReason || command.description}</small>
-            </button>
-          );
-        })
-      ) : (
-        <div className="slashEmpty">No matching slash commands.</div>
-      )}
-    </div>
-  );
-}
-
-function TurnPanel({
-  active,
-  defaultOpen,
-  turn
-}: {
-  active: boolean;
-  defaultOpen: boolean;
-  turn: DisplayTurn;
-}) {
-  const [open, setOpen] = useState(defaultOpen || active);
-  const bodyRef = useRef<HTMLDivElement | null>(null);
-  const userItem = turn.items.find((item) => item.type === "userMessage");
-  const outputItems = turn.items.filter((item) => item.type !== "userMessage");
-  const diffItems = outputItems.filter((item) => item.type === "diff");
-  const responseItems = outputItems.filter((item) => item.type !== "diff").reverse();
-  const hasCodexOutput = open && responseItems.length > 0;
-  const title = userItem
-    ? compactText(itemText(userItem), 120) || "User message"
-    : turn.pending
-      ? "Sending to Codex"
-      : active
-        ? "Running turn"
-        : "Codex turn";
-  const time = turn.completedAt || turn.updatedAt || turn.startedAt || 0;
-  const status = turn.pending ? "sending" : active ? "streaming" : statusLabel(turn.status);
-  const contentVersion = open && (active || turn.pending) ? turn.items.map(itemVersion).join("|") : "";
-
-  useEffect(() => {
-    if (active) setOpen(true);
-  }, [active]);
-
-  useEffect(() => {
-    if (!open || (!active && !turn.pending)) return;
-    bodyRef.current?.scrollTo({ top: 0 });
-  }, [active, contentVersion, open, turn.pending]);
-
-  return (
-    <details
-      className={`turnPanel ${active || turn.pending ? "active" : ""}`}
-      open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
-    >
-      <summary>
-        <span className="turnSummaryMain">
-          <strong>{title}</strong>
-          {time ? <small>{formatTime(time)}</small> : null}
-        </span>
-        <span className="turnSummaryMeta">
-          <span className={active || turn.pending ? "liveBadge" : ""}>{status}</span>
-          <span>
-            {responseItems.length} response item{responseItems.length === 1 ? "" : "s"}
-          </span>
-          {diffItems.length ? <span>{diffItems.length} code artifact{diffItems.length === 1 ? "" : "s"}</span> : null}
-        </span>
-      </summary>
-      {open ? (
-        <div className="turnBody" ref={bodyRef}>
-          {userItem ? <MessageItem item={userItem} key={userItem.id} /> : null}
-          {responseItems.map((item) => (
-            <MessageItem item={item} key={item.id} streaming={(active || turn.pending) && item.type !== "userMessage"} />
-          ))}
-          {(active || turn.pending) && !hasCodexOutput ? (
-            <div className="streamPlaceholder">
-              <span className="pulseDot" />
-              {turn.pending ? "Sending to Codex..." : "Codex is working..."}
-            </div>
-          ) : null}
-          <TurnCodeChanges items={diffItems} />
-        </div>
-      ) : null}
-    </details>
-  );
-}
-
-function TurnCodeChanges({ items }: { items: ThreadItem[] }) {
-  const [open, setOpen] = useState(false);
-  const [selectedId, setSelectedId] = useState(items[0]?.id || "");
-  const selected = items.find((item) => item.id === selectedId) || items[0];
-
-  useEffect(() => {
-    if (!items.length) {
-      setSelectedId("");
-      return;
-    }
-    if (!items.some((item) => item.id === selectedId)) setSelectedId(items[0].id);
-  }, [items, selectedId]);
-
-  if (!items.length || !selected) return null;
-
-  const totals = items.reduce(
-    (sum, item) => {
-      const stats = diffStats(item);
-      for (const status of stats.statuses) sum.statuses.add(status);
-      sum.files += stats.files;
-      sum.additions += stats.additions;
-      sum.deletions += stats.deletions;
-      return sum;
-    },
-    { files: 0, additions: 0, deletions: 0, statuses: new Set<string>() }
-  );
-  const selectedProjectDiff = projectDiffFromItem(selected);
-
-  return (
-    <section className={`turnCodeChanges ${open ? "expanded" : ""}`}>
-      <button className="turnCodeChangesSummary" type="button" onClick={() => setOpen((current) => !current)}>
-        <span>
-          <FileDiff size={15} />
-          <strong>Code changes</strong>
-        </span>
-        <code>{totals.files} file{totals.files === 1 ? "" : "s"}</code>
-        <code>+{totals.additions} -{totals.deletions}</code>
-        {[...totals.statuses].slice(0, 3).map((status) => (
-          <small key={status}>{status}</small>
-        ))}
-        <ChevronRight className={open ? "expanded" : ""} size={15} />
-      </button>
-      {open ? (
-        <div className="turnCodeChangesBody">
-          {items.length > 1 ? (
-            <div className="segmentedMini">
-              {items.map((item, index) => {
-                const stats = diffStats(item);
-                return (
-                  <button className={item.id === selected.id ? "active" : ""} key={item.id} type="button" onClick={() => setSelectedId(item.id)}>
-                    Diff {index + 1} · {stats.files}
-                  </button>
-                );
-              })}
-            </div>
-          ) : null}
-          {selectedProjectDiff ? <ProjectDiffPanel data={selectedProjectDiff} /> : <DiffViewer diff={itemText(selected)} />}
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-function HighlightedCode({ text, filePath, startLine = 1 }: { text: string; filePath: string; startLine?: number }) {
-  const language = languageForPath(filePath);
-  const lines = text.split("\n");
-  return (
-    <pre className="codePreviewBlock">
-      {lines.map((line, index) => (
-        <span className="codePreviewLine" key={`${index}-${line}`}>
-          <span className="codeLineNo">{startLine + index}</span>
-          <code>
-            {codeTokens(line, language).map((token, tokenIndex) => (
-              <span className={`tok tok-${token.kind}`} key={`${tokenIndex}-${token.text}`}>
-                {token.text}
-              </span>
-            ))}
-          </code>
-        </span>
-      ))}
-    </pre>
-  );
-}
-
-function DiffLineRow({ line, filePath }: { line: DiffLine; filePath: string }) {
-  const code = line.kind === "add" || line.kind === "delete" || line.kind === "context" ? line.text.slice(1) : line.text;
-  const prefix = line.kind === "add" ? "+" : line.kind === "delete" ? "-" : line.kind === "context" ? " " : "";
-  return (
-    <span className={`diffLine diffLine-${line.kind}`}>
-      <span className="diffOldNo">{line.oldLine ?? ""}</span>
-      <span className="diffNewNo">{line.newLine ?? ""}</span>
-      <span className="diffPrefix">{prefix}</span>
-      <span className="diffCode">
-        {line.kind === "hunk" || line.kind === "meta"
-          ? line.text
-          : codeTokens(code, languageForPath(filePath)).map((token, tokenIndex) => (
-              <span className={`tok tok-${token.kind}`} key={`${tokenIndex}-${token.text}`}>
-                {token.text}
-              </span>
-            ))}
-      </span>
-    </span>
-  );
-}
-
-function DiffViewer({ diff, selectedFile }: { diff: string; selectedFile?: string | null }) {
-  const sections = useMemo(() => parseUnifiedDiff(diff), [diff]);
-  const visibleSections = selectedFile ? sections.filter((section) => section.file === selectedFile) : sections;
-  if (!diff) return <p className="muted">No diff returned.</p>;
-
-  return (
-    <div className="diffViewer">
-      {visibleSections.map((section, sectionIndex) => (
-        <section className="diffFile" key={`${section.file}-${sectionIndex}`}>
-          <header>
-            <FileText size={14} />
-            <strong>{section.file}</strong>
-            <small>+{section.additions} -{section.deletions}</small>
-          </header>
-          <pre>
-            {section.lines.map((line, lineIndex) => (
-              <DiffLineRow filePath={section.file} line={line} key={`${lineIndex}-${line.text}`} />
-            ))}
-          </pre>
-        </section>
-      ))}
-    </div>
-  );
-}
-
-function CodePreviewDrawer({
-  diff,
-  filePath,
-  onClose
-}: {
-  diff: ProjectDiff;
-  filePath: string;
-  onClose: () => void;
-}) {
-  const [tab, setTab] = useState<"current" | "before" | "after">("current");
-  const [previews, setPreviews] = useState<Partial<Record<"current" | "before" | "after", FilePreview>>>({});
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const canCompare = Boolean(diff.baseTree && diff.currentTree);
-  const active = previews[tab];
-
-  const loadPreview = useCallback(
-    async (nextTab: "current" | "before" | "after") => {
-      setTab(nextTab);
-      if (previews[nextTab]) {
-        setError("");
-        return;
-      }
-      setLoading(true);
-      setError("");
-      try {
-        const query = `cwd=${encodeURIComponent(diff.root)}&path=${encodeURIComponent(filePath)}`;
-        const tree = nextTab === "before" ? diff.baseTree : nextTab === "after" ? diff.currentTree : null;
-        const preview = tree
-          ? await getJson<FilePreview>(`/api/projects/file-at-tree?${query}&tree=${encodeURIComponent(tree)}`)
-          : await getJson<FilePreview>(`/api/projects/file?${query}`);
-        setPreviews((current) => ({ ...current, [nextTab]: preview }));
-      } catch (loadError) {
-        setError(loadError instanceof Error ? loadError.message : String(loadError));
-      } finally {
-        setLoading(false);
-      }
-    },
-    [diff.baseTree, diff.currentTree, diff.root, filePath, previews]
-  );
-
-  useEffect(() => {
-    if (!previews.current) loadPreview("current");
-  }, [loadPreview, previews.current]);
-
-  return (
-    <section className="codePreviewDrawer">
-      <header>
-        <span>
-          <Code2 size={15} />
-          <strong>{filePath}</strong>
-        </span>
-        <button className="inlineIconButton" type="button" onClick={onClose}>
-          <X size={14} />
-          Close
-        </button>
-      </header>
-      <div className="segmentedMini">
-        <button className={tab === "current" ? "active" : ""} type="button" onClick={() => loadPreview("current")}>
-          Current
-        </button>
-        <button className={tab === "before" ? "active" : ""} disabled={!canCompare} type="button" onClick={() => loadPreview("before")}>
-          Before
-        </button>
-        <button className={tab === "after" ? "active" : ""} disabled={!canCompare} type="button" onClick={() => loadPreview("after")}>
-          After
-        </button>
-      </div>
-      {loading ? <p className="muted">Loading code...</p> : null}
-      {error ? <p className="errorText">{error}</p> : null}
-      {active && !active.exists ? <p className="muted">File does not exist in this view.</p> : null}
-      {active?.tooLarge ? <p className="muted">File is too large to preview ({active.size} bytes).</p> : null}
-      {active?.binary ? <p className="muted">Binary file preview is not available.</p> : null}
-      {active?.content !== null && active?.content !== undefined ? <HighlightedCode filePath={filePath} text={active.content} /> : null}
-    </section>
-  );
-}
-
-function ProjectDiffPanel({ data }: { data: ProjectDiff | null }) {
-  const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [codeFile, setCodeFile] = useState<string | null>(null);
-  const sections = useMemo(() => parseUnifiedDiff(data?.diff || ""), [data?.diff]);
-
-  useEffect(() => {
-    if (!data?.files.length) {
-      setSelectedFile(null);
-      return;
-    }
-    if (!selectedFile || !data.files.some((file) => file.path === selectedFile)) setSelectedFile(data.files[0].path);
-  }, [data?.files, selectedFile]);
-
-  if (!data) return <p className="muted">No diff returned.</p>;
-  if (!data.hasChanges) {
-    return (
-      <div className="diffPanel">
-        <div className="diffSummary">
-          <strong>No working-tree changes</strong>
-          <small>{data.root}</small>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="diffPanel">
-      <div className="diffSummary">
-        <strong>
-          {data.files.length} file{data.files.length === 1 ? "" : "s"} changed
-        </strong>
-        <small>
-          {data.branch || "detached"} · +{data.additions} -{data.deletions}
-        </small>
-        <small>{data.root}</small>
-      </div>
-      <div className="diffBrowser">
-        <aside className="diffFileNav">
-          <button className={!selectedFile ? "selected" : ""} type="button" onClick={() => setSelectedFile(null)}>
-            <ListTree size={14} />
-            <span>All files</span>
-            <code>{data.files.length}</code>
-          </button>
-          {data.files.map((file) => (
-            <button
-              className={selectedFile === file.path ? "selected" : ""}
-              key={file.path}
-              title={file.path}
-              type="button"
-              onClick={() => setSelectedFile(file.path)}
-            >
-              <FileText size={13} />
-              <span>{file.path}</span>
-              <code>{file.status}</code>
-              {!file.binary && !file.tooLarge ? <small>+{file.additions} -{file.deletions}</small> : null}
-            </button>
-          ))}
-        </aside>
-        <section className="diffContent">
-          <div className="diffToolbar">
-            <strong>{selectedFile || "All files"}</strong>
-            <span>
-              {selectedFile
-                ? `${sections.find((section) => section.file === selectedFile)?.lines.length || 0} lines`
-                : `${sections.length} diff section${sections.length === 1 ? "" : "s"}`}
-            </span>
-            {selectedFile ? (
-              <>
-                <button type="button" onClick={() => setCodeFile(selectedFile)}>
-                  <Code2 size={14} />
-                  Open code
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    navigator.clipboard?.writeText(
-                      sections
-                        .filter((section) => section.file === selectedFile)
-                        .flatMap((section) => section.lines.map((line) => line.text))
-                        .join("\n")
-                    )
-                  }
-                >
-                  <Copy size={14} />
-                  Copy file diff
-                </button>
-              </>
-            ) : null}
-          </div>
-          <DiffViewer diff={data.diff} selectedFile={selectedFile} />
-        </section>
-      </div>
-      {codeFile ? <CodePreviewDrawer diff={data} filePath={codeFile} onClose={() => setCodeFile(null)} /> : null}
-      <details>
-        <summary>Raw git status</summary>
-        <pre className="diffRaw">{data.status || "clean"}</pre>
-      </details>
-    </div>
-  );
-}
-
-const MessageItem = memo(function MessageItem({ item, streaming = false }: { item: ThreadItem; streaming?: boolean }) {
-  const text = itemText(item);
-  const [expanded, setExpanded] = useState(false);
-  const label =
-    item.type === "userMessage"
-      ? "You"
-      : item.type === "agentMessage"
-        ? "Codex"
-        : item.type === "commandExecution"
-          ? "Command"
-          : item.type === "fileChange"
-            ? "File change"
-            : item.type === "diff"
-                ? "Diff"
-                : item.type;
-  const output = text || (streaming ? "Waiting for output" : "...");
-  const isLong = output.length > 800;
-  const preClass = expanded ? "expandedPre" : "";
-
-  async function copy(value: string) {
-    await navigator.clipboard?.writeText(value).catch(() => undefined);
-  }
-
-  if (item.type === "userMessage") {
-    const parts = userMessageParts(item);
-    return (
-      <article className="message userMessage">
-        <header>
-          <span>You</span>
-          {parts.images.length ? <code>{parts.images.length} image{parts.images.length === 1 ? "" : "s"}</code> : null}
-          {parts.text ? (
-            <button className="inlineIconButton" type="button" onClick={() => copy(parts.text)}>
-              <Copy size={14} />
-              Copy
-            </button>
-          ) : null}
-        </header>
-        {parts.text ? <pre>{parts.text}</pre> : null}
-        {parts.images.length ? (
-          <div className="messageImages">
-            {parts.images.map((url, index) => (
-              <img alt={`Attachment ${index + 1}`} key={`${url}-${index}`} src={url} />
-            ))}
-          </div>
-        ) : null}
-      </article>
-    );
-  }
-
-  if (item.type === "plan" && item.planEntries?.length) {
-    return (
-      <article className={`message plan ${streaming ? "streamingMessage" : ""}`}>
-        <header>
-          <span>Plan</span>
-          {streaming ? (
-            <span className="messageLive">
-              <span className="pulseDot" />
-              Streaming
-            </span>
-          ) : null}
-        </header>
-        {item.explanation ? <p className="planExplanation">{item.explanation}</p> : null}
-        <ol className="planList">
-          {item.planEntries.map((entry, index) => (
-            <li className={`planStep ${entry.status}`} key={`${entry.step}-${index}`}>
-              <span>{entry.status}</span>
-              <p>{entry.step}</p>
-            </li>
-          ))}
-        </ol>
-      </article>
-    );
-  }
-
-  if (item.type === "commandExecution") {
-    return (
-      <article className={`message commandExecution ${streaming ? "streamingMessage" : ""}`}>
-        <header>
-          <span>
-            <Terminal size={14} />
-            Command
-          </span>
-          {typeof item.exitCode === "number" ? (
-            <code className={item.exitCode === 0 ? "exitOk" : "exitError"}>exit {item.exitCode}</code>
-          ) : null}
-          {streaming ? (
-            <span className="messageLive">
-              <span className="pulseDot" />
-              Streaming
-            </span>
-          ) : null}
-          {item.command ? <code>{item.command}</code> : null}
-          <button className="inlineIconButton" type="button" onClick={() => copy(output)}>
-            <Copy size={14} />
-            Copy
-          </button>
-        </header>
-        <pre className={preClass}>
-          {output}
-          {streaming ? <span className="streamCursor" /> : null}
-        </pre>
-        {isLong ? (
-          <button className="textButton" type="button" onClick={() => setExpanded((current) => !current)}>
-            {expanded ? "Collapse" : "Expand"}
-          </button>
-        ) : null}
-      </article>
-    );
-  }
-
-  if (item.type === "fileChange" || item.type === "diff") {
-    const projectDiff = item.type === "diff" && item.projectDiff && typeof item.projectDiff === "object" ? (item.projectDiff as ProjectDiff) : null;
-    const files = projectDiff?.files?.length
-      ? projectDiff.files.map((file) => file.path)
-      : item.type === "diff"
-        ? diffFiles(output)
-        : changedFiles(item).map((change) => change.path);
-    return (
-      <article className={`message ${item.type} ${streaming ? "streamingMessage" : ""}`}>
-        <header>
-          <span>
-            <FileDiff size={14} />
-            {item.type === "diff" ? String(item.title || "Code changes") : "File change"}
-          </span>
-          <code>{files.length} file{files.length === 1 ? "" : "s"}</code>
-          {projectDiff ? <code>+{projectDiff.additions} -{projectDiff.deletions}</code> : null}
-          <button className="inlineIconButton" type="button" onClick={() => copy(output)}>
-            <Copy size={14} />
-            Copy
-          </button>
-        </header>
-        {files.length ? (
-          <div className="fileList">
-            {files.slice(0, 8).map((file) => (
-              <span key={file}>
-                <FileText size={13} />
-                {file}
-              </span>
-            ))}
-            {files.length > 8 ? <small>+{files.length - 8} more</small> : null}
-          </div>
-        ) : null}
-        {projectDiff ? <ProjectDiffPanel data={projectDiff} /> : item.type === "diff" ? <DiffViewer diff={output} /> : <pre className={preClass}>{output}</pre>}
-        {isLong && item.type !== "diff" ? (
-          <button className="textButton" type="button" onClick={() => setExpanded((current) => !current)}>
-            {expanded ? "Collapse" : "Expand"}
-          </button>
-        ) : null}
-      </article>
-    );
-  }
-
-  const renderMarkdown = item.type === "agentMessage" || item.type === "plan";
-
-  return (
-    <article className={`message ${item.type} ${streaming ? "streamingMessage" : ""}`}>
-      <header>
-        <span>{label}</span>
-        {streaming ? (
-          <span className="messageLive">
-            <span className="pulseDot" />
-            Streaming
-          </span>
-        ) : null}
-        {item.command ? <code>{item.command}</code> : null}
-        {renderMarkdown ? (
-          <button className="inlineIconButton" type="button" onClick={() => copy(output)}>
-            <Copy size={14} />
-            Copy
-          </button>
-        ) : null}
-      </header>
-      {renderMarkdown ? (
-        <MarkdownBody expanded={expanded} streaming={streaming} text={output} />
-      ) : (
-        <pre className={`agentPre ${preClass}`}>
-          {output}
-          {streaming ? <span className="streamCursor" /> : null}
-        </pre>
-      )}
-      {isLong ? (
-        <button className="textButton" type="button" onClick={() => setExpanded((current) => !current)}>
-          {expanded ? "Collapse" : "Expand"}
-        </button>
-      ) : null}
-    </article>
-  );
-});
-
+/**
+ * `groupedRounds` rebuilds round objects on every recompute, so compare the
+ * content instead. Item objects keep their identity across refreshes, which
+ * makes the item comparison a reference check.
+ */
 function ServerRequestDialog({
   request,
   onAnswer
@@ -5105,9 +5745,17 @@ function ServerRequestDialog({
 
   return (
     <div className="dialogBackdrop">
-      <section className={`dialog approvalDialog ${kind}`} onKeyDown={handleKeyDown} ref={dialogRef} tabIndex={-1}>
+      <section
+        aria-labelledby={`approval-title-${request.id}`}
+        aria-modal="true"
+        className={`dialog approvalDialog ${kind}`}
+        onKeyDown={handleKeyDown}
+        ref={dialogRef}
+        role="dialog"
+        tabIndex={-1}
+      >
         <header>
-          <h2>{approvalTitle(request)}</h2>
+          <h2 id={`approval-title-${request.id}`}>{approvalTitle(request)}</h2>
           <p>{approvalSummary(request)}</p>
           <ShortcutHints
             items={[
@@ -5124,7 +5772,7 @@ function ServerRequestDialog({
           {command ? (
             <section className="approvalPreview">
               <h3>
-                <Terminal size={15} />
+                <Terminal aria-hidden="true" size={15} />
                 Command
               </h3>
               <pre>{command}</pre>
@@ -5133,13 +5781,13 @@ function ServerRequestDialog({
           {files.length ? (
             <section className="approvalPreview">
               <h3>
-                <FileDiff size={15} />
+                <FileDiff aria-hidden="true" size={15} />
                 Files
               </h3>
               <div className="fileList">
                 {files.map((file) => (
                   <span key={file}>
-                    <FileText size={13} />
+                    <FileText aria-hidden="true" size={13} />
                     {file}
                   </span>
                 ))}
@@ -5164,17 +5812,17 @@ function ServerRequestDialog({
         </div>
         <footer>
           <button type="button" onClick={() => onAnswer(request, declineResult)}>
-            <X size={17} />
+            <X aria-hidden="true" size={17} />
             Decline
           </button>
           {canApproveForSession ? (
             <button type="button" onClick={() => onAnswer(request, approveForSessionResult)}>
-              <Check size={17} />
+              <Check aria-hidden="true" size={17} />
               Approve session
             </button>
           ) : null}
           <button className="primaryButton" type="button" onClick={() => onAnswer(request, approveResult)}>
-            <Check size={17} />
+            <Check aria-hidden="true" size={17} />
             Approve
           </button>
         </footer>
@@ -5194,6 +5842,8 @@ function UserInputDialog({
   const dialogRef = useRef<HTMLElement | null>(null);
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
   const [freeText, setFreeText] = useState<Record<string, string>>({});
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState("");
   const optionShortcuts = useMemo(() => {
     const shortcuts: Array<{ key: string; questionId: string; label: string }> = [];
     for (const question of params.questions) {
@@ -5211,28 +5861,25 @@ function UserInputDialog({
     hints.push({ keys: ["Enter"], label: "confirm" }, { keys: ["Esc"], label: "cancel" });
     return hints;
   }, [optionShortcuts]);
+  const canSubmit = params.questions.every((question) =>
+    Boolean((answers[question.id] || []).length || freeText[question.id]?.trim())
+  );
 
   useEffect(() => {
     dialogRef.current?.focus();
   }, [request.id]);
 
-  function toggle(questionId: string, label: string) {
-    setAnswers((current) => {
-      const selected = current[questionId] || [];
-      return {
-        ...current,
-        [questionId]: selected.includes(label)
-          ? selected.filter((item) => item !== label)
-          : [...selected, label]
-      };
-    });
+  function choose(questionId: string, label: string) {
+    setAnswers((current) => ({ ...current, [questionId]: [label] }));
+    setFreeText((current) => ({ ...current, [questionId]: "" }));
   }
 
   function optionShortcut(questionId: string, label: string) {
     return optionShortcuts.find((shortcut) => shortcut.questionId === questionId && shortcut.label === label)?.key;
   }
 
-  function submit() {
+  async function submit() {
+    if (submitting || !canSubmit) return;
     const result: Record<string, { answers: string[] }> = {};
     for (const question of params.questions) {
       const selected = [...(answers[question.id] || [])];
@@ -5240,11 +5887,26 @@ function UserInputDialog({
       if (typed) selected.push(typed);
       result[question.id] = { answers: selected };
     }
-    onAnswer(request, { answers: result });
+    setSubmitting(true);
+    setSubmitError("");
+    try {
+      await onAnswer(request, { answers: result });
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : String(error));
+      setSubmitting(false);
+    }
   }
 
-  function cancel() {
-    onAnswer(request, { answers: {} });
+  async function cancel() {
+    if (submitting) return;
+    setSubmitting(true);
+    setSubmitError("");
+    try {
+      await onAnswer(request, { answers: {} });
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : String(error));
+      setSubmitting(false);
+    }
   }
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
@@ -5252,13 +5914,13 @@ function UserInputDialog({
 
     if (event.key === "Escape") {
       event.preventDefault();
-      cancel();
+      void cancel();
       return;
     }
 
     if (event.key === "Enter") {
       event.preventDefault();
-      submit();
+      void submit();
       return;
     }
 
@@ -5266,15 +5928,23 @@ function UserInputDialog({
       const shortcut = optionShortcuts.find((item) => item.key === event.key);
       if (!shortcut) return;
       event.preventDefault();
-      toggle(shortcut.questionId, shortcut.label);
+      choose(shortcut.questionId, shortcut.label);
     }
   }
 
   return (
     <div className="dialogBackdrop">
-      <section className="dialog" onKeyDown={handleKeyDown} ref={dialogRef} tabIndex={-1}>
+      <section
+        aria-labelledby={`user-input-title-${request.id}`}
+        aria-modal="true"
+        className="dialog userInputDialog"
+        onKeyDown={handleKeyDown}
+        ref={dialogRef}
+        role="dialog"
+        tabIndex={-1}
+      >
         <header>
-          <h2>Codex needs input</h2>
+          <h2 id={`user-input-title-${request.id}`}>Codex needs input</h2>
           <p>{params.questions.length} question{params.questions.length === 1 ? "" : "s"}</p>
           <ShortcutHints items={inputShortcutHints} />
         </header>
@@ -5291,9 +5961,11 @@ function UserInputDialog({
                     return (
                       <label className="option" key={option.label}>
                         <input
-                          type="checkbox"
+                          type="radio"
+                          name={`answer-${question.id}`}
+                          disabled={submitting}
                           checked={(answers[question.id] || []).includes(option.label)}
-                          onChange={() => toggle(question.id, option.label)}
+                          onChange={() => choose(question.id, option.label)}
                         />
                         <span>
                           <strong>
@@ -5309,25 +5981,35 @@ function UserInputDialog({
               ) : null}
               {question.isOther || !question.options ? (
                 <input
+                  aria-label={question.question || question.header || "Answer"}
+                  autoComplete="off"
                   className="freeInput"
+                  name={`answer-${question.id}`}
                   type={question.isSecret ? "password" : "text"}
+                  disabled={submitting}
                   value={freeText[question.id] || ""}
-                  onChange={(event) => setFreeText((current) => ({ ...current, [question.id]: event.target.value }))}
-                  placeholder={question.isOther ? "Other answer" : "Answer"}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setFreeText((current) => ({ ...current, [question.id]: value }));
+                    if (value) setAnswers((current) => ({ ...current, [question.id]: [] }));
+                  }}
+                  placeholder={question.isOther ? "Other answer…" : "Answer…"}
                 />
               ) : null}
             </section>
           ))}
         </div>
 
+        {submitError ? <p className="errorText" role="alert">Could not continue: {submitError}</p> : null}
+
         <footer>
-          <button type="button" onClick={cancel}>
-            <X size={17} />
+          <button type="button" disabled={submitting} onClick={() => void cancel()}>
+            <X aria-hidden="true" size={17} />
             Cancel
           </button>
-          <button className="primaryButton" type="button" onClick={submit}>
-            <Play size={17} />
-            Confirm
+          <button className="primaryButton" type="button" disabled={submitting || !canSubmit} onClick={() => void submit()}>
+            {submitting ? <LoaderCircle aria-hidden="true" className="queueSpinner" size={17} /> : <Play aria-hidden="true" size={17} />}
+            {submitting ? "Continuing…" : "Confirm"}
           </button>
         </footer>
       </section>

@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1440" height="810" viewBox="0 0 1440 810" role="img" aria-labelledby="title desc">
-  <title id="title">Codex Remote Console overview</title>
+  <title id="title">Coding Agent Console overview</title>
   <desc id="desc">A sanitized product screenshot showing the browser console controlling a Codex session running on a remote machine.</desc>
   <rect width="1440" height="810" fill="#f5f7f5"/>
   <rect x="18" y="18" width="1404" height="774" rx="18" fill="#ffffff" stroke="#d9e0db"/>

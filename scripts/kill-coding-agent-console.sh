@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-PORT="${1:-3027}"
+PORT="${1:-3032}"
 
 declare -A PIDS=()
 
@@ -60,13 +60,13 @@ for pid in "${!PIDS[@]}"; do
 done
 
 if ((${#PIDS[@]} == 0)); then
-  echo "No codex_remote_console process found for $ROOT on port $PORT."
+  echo "No Coding Agent Console process found for $ROOT on port $PORT."
   exit 0
 fi
 
 mapfile -t SORTED_PIDS < <(printf '%s\n' "${!PIDS[@]}" | sort -n)
 
-echo "Stopping codex_remote_console processes:"
+echo "Stopping Coding Agent Console processes:"
 for pid in "${SORTED_PIDS[@]}"; do
   echo "  $pid $(proc_cmd "$pid")"
 done

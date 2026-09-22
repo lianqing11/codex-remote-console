@@ -1,6 +1,7 @@
 import { autoApprovalForRequest } from "../approvalPolicy";
 import type {
   BrowserEvent,
+  CodexGatewayDiagnostic,
   CodexGatewaySnapshot,
   JsonRpcId,
   JsonRpcNotification,
@@ -24,6 +25,7 @@ export abstract class BaseCodexGateway {
   private subscribers = new Set<(event: BrowserEvent) => void>();
   private initializeInfo: unknown = null;
   private collaborationModes: unknown[] = [];
+  private diagnostic: CodexGatewayDiagnostic | null = null;
 
   subscribe(callback: (event: BrowserEvent) => void) {
     this.subscribers.add(callback);
@@ -34,7 +36,8 @@ export abstract class BaseCodexGateway {
     return {
       initializeInfo: this.initializeInfo,
       collaborationModes: this.collaborationModes,
-      pendingServerRequests: Array.from(this.serverRequests.values())
+      pendingServerRequests: Array.from(this.serverRequests.values()),
+      diagnostic: this.diagnostic
     };
   }
 
@@ -96,7 +99,11 @@ export abstract class BaseCodexGateway {
 
   protected handleTransportClosed(detail?: string) {
     this.rejectPending(new Error(detail || "Codex app-server connection closed."));
+    const pendingIds = [...this.serverRequests.keys()];
     this.serverRequests.clear();
+    for (const requestId of pendingIds) {
+      this.broadcast({ type: "codex:serverRequestResolved", requestId });
+    }
     this.broadcast({ type: "gateway:state", status: "disconnected", detail });
   }
 
@@ -104,12 +111,32 @@ export abstract class BaseCodexGateway {
     this.broadcast({ type: "gateway:state", status: "error", detail: error.message });
   }
 
+  protected reportDiagnostic(diagnostic: Omit<CodexGatewayDiagnostic, "occurredAt">) {
+    if (
+      this.diagnostic?.code === diagnostic.code &&
+      this.diagnostic.title === diagnostic.title &&
+      this.diagnostic.detail === diagnostic.detail
+    ) {
+      return;
+    }
+
+    this.diagnostic = { ...diagnostic, occurredAt: Date.now() };
+    this.broadcast({ type: "gateway:diagnostic", diagnostic: this.diagnostic });
+  }
+
+  private clearDiagnostic() {
+    if (!this.diagnostic) return;
+    this.diagnostic = null;
+    this.broadcast({ type: "gateway:diagnostic", diagnostic: null });
+  }
+
   private async start() {
+    this.clearDiagnostic();
     this.broadcast({ type: "gateway:state", status: "starting" });
     await this.startTransport((message) => this.handleMessage(message));
 
     this.initializeInfo = await this.request("initialize", {
-      clientInfo: { name: "codex-remote-console", version: "0.1.0" },
+      clientInfo: { name: "coding-agent-console", version: "0.1.0" },
       capabilities: { experimentalApi: true, optOutNotificationMethods: [] }
     });
     this.notify({ method: "initialized" });
@@ -164,6 +191,14 @@ export abstract class BaseCodexGateway {
   }
 
   private handleNotification(notification: JsonRpcNotification) {
+    if (
+      notification.method === "turn/started" ||
+      notification.method === "turn/completed" ||
+      notification.method.startsWith("item/")
+    ) {
+      this.clearDiagnostic();
+    }
+
     if (notification.method === "serverRequest/resolved") {
       const params = notification.params;
       if (params && typeof params === "object" && "requestId" in params) {

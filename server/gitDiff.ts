@@ -4,6 +4,7 @@ import { access, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { resolveInsideRoot } from "./pathGuard";
 
 const execFileAsync = promisify(execFile);
 const maxInlineUntrackedBytes = 256 * 1024;
@@ -70,10 +71,7 @@ async function gitRoot(cwd: string) {
 }
 
 function assertInsideRoot(root: string, relativePath: string) {
-  const target = path.resolve(root, relativePath);
-  const relative = path.relative(root, target);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error(`Git path escapes repository root: ${relativePath}`);
-  return target;
+  return resolveInsideRoot(root, relativePath);
 }
 
 function assertRepoPath(relativePath: string) {
@@ -205,7 +203,7 @@ async function diffBetweenTrees(root: string, beforeTree: string, afterTree: str
 
 export async function gitWorkingTreeSnapshot(cwd: string) {
   const root = await gitRoot(cwd);
-  const temp = await mkdtemp(path.join(tmpdir(), "codex-remote-console-index-"));
+  const temp = await mkdtemp(path.join(tmpdir(), "coding-agent-console-index-"));
   const indexPath = path.join(temp, "index");
   const env = { GIT_INDEX_FILE: indexPath };
 

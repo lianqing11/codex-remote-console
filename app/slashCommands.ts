@@ -1,6 +1,9 @@
+import type { ProviderId } from "./sessionRuntime";
+
 export type SlashCommandAction =
   | "set-mode"
   | "open-panel"
+  | "switch-provider"
   | "toggle-fast"
   | "run-review"
   | "new-thread"
@@ -30,6 +33,7 @@ export type SlashCommand = {
 export type SlashCommandContext = {
   hasThread: boolean;
   activeTurn: boolean;
+  provider?: ProviderId;
 };
 
 const unsupported = (reason: string) => ({
@@ -39,6 +43,13 @@ const unsupported = (reason: string) => ({
 });
 
 export const slashCommands: SlashCommand[] = [
+  {
+    id: "provider",
+    label: "/provider",
+    description: "choose Codex or Cursor Agent for the next session",
+    action: "open-panel",
+    available: true
+  },
   {
     id: "model",
     label: "/model",
@@ -57,7 +68,7 @@ export const slashCommands: SlashCommand[] = [
     id: "permissions",
     aliases: ["permission"],
     label: "/permissions",
-    description: "choose what Codex is allowed to do",
+    description: "choose what the current agent is allowed to do",
     action: "open-panel",
     available: true
   },
@@ -65,7 +76,7 @@ export const slashCommands: SlashCommand[] = [
     id: "keymap",
     label: "/keymap",
     description: "remap TUI shortcuts",
-    ...unsupported("Codex Remote Console does not own the terminal TUI keymap.")
+    ...unsupported("Coding Agent Console does not own the terminal TUI keymap.")
   },
   {
     id: "experimental",
@@ -78,7 +89,7 @@ export const slashCommands: SlashCommand[] = [
     id: "autoreview",
     label: "/autoreview",
     description: "approve one retry of a recent auto-review denial",
-    ...unsupported("No recent guardian denial event is exposed to Codex Remote Console yet.")
+    ...unsupported("No recent guardian denial event is exposed to Coding Agent Console yet.")
   },
   {
     id: "memories",
@@ -115,7 +126,7 @@ export const slashCommands: SlashCommand[] = [
   {
     id: "new",
     label: "/new",
-    description: "start a new chat during a conversation",
+    description: "start a new chat; the session is created when you send",
     action: "new-thread",
     available: true,
     disabledDuringTurn: true
@@ -155,6 +166,13 @@ export const slashCommands: SlashCommand[] = [
     id: "plan",
     label: "/plan",
     description: "switch to Plan mode",
+    action: "set-mode",
+    available: true
+  },
+  {
+    id: "ask",
+    label: "/ask",
+    description: "switch to Ask mode",
     action: "set-mode",
     available: true
   },
@@ -244,14 +262,14 @@ export const slashCommands: SlashCommand[] = [
   {
     id: "logout",
     label: "/logout",
-    description: "log out of Codex Remote Console",
+    description: "log out of Coding Agent Console",
     action: "logout",
     available: true
   },
   {
     id: "exit",
     label: "/exit",
-    description: "close the selected Codex Remote Console session",
+    description: "close the selected Coding Agent Console session",
     action: "exit-thread",
     available: true
   },
@@ -296,7 +314,13 @@ export function filterSlashCommands(query: string) {
 }
 
 export function slashCommandDisabledReason(command: SlashCommand, context: SlashCommandContext) {
-  if (!command.available) return command.disabledReason || "This command is not available in Codex Remote Console.";
+  if (!command.available) return command.disabledReason || "This command is not available in Coding Agent Console.";
+  if (command.id === "ask" && context.provider !== "cursor") return "Ask mode is available for Cursor sessions.";
+  if (context.provider && context.provider !== "codex") {
+    if (["permissions", "fast", "collab", "fork", "side", "compact", "mcp", "plugins", "skills", "memories", "experimental"].includes(command.id)) {
+      return "This command is Codex-only.";
+    }
+  }
   if (command.requiresThread && !context.hasThread) return "Select or start a session first.";
   if (command.disabledDuringTurn && context.activeTurn) return "Wait for the active turn to finish first.";
   return "";

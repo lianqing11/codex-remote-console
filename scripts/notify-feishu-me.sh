@@ -6,7 +6,14 @@ if [[ $# -eq 0 ]]; then
   exit 2
 fi
 
-lark-cli im +messages-send \
+if [[ -z "${CODEX_WEB_FEISHU_USER_OPEN_ID:-}" ]]; then
+  echo "CODEX_WEB_FEISHU_USER_OPEN_ID is required" >&2
+  exit 2
+fi
+
+feishu_cli="${CODEX_WEB_FEISHU_CLI:-lark-cli}"
+
+"$feishu_cli" im +messages-send \
   --as bot \
-  --user-id "ou_731b47962ce9e91ce3d1cbabeac3ba58" \
+  --user-id "$CODEX_WEB_FEISHU_USER_OPEN_ID" \
   --text "$*"

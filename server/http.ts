@@ -1,8 +1,24 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-export async function readJson(req: IncomingMessage) {
+const defaultMaxJsonBytes = 1024 * 1024;
+
+export class HttpError extends Error {
+  constructor(
+    readonly statusCode: number,
+    message: string
+  ) {
+    super(message);
+  }
+}
+
+export async function readJson(req: IncomingMessage, maxBytes = defaultMaxJsonBytes) {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(Buffer.from(chunk));
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > maxBytes) throw new HttpError(413, "Request body too large.");
+    chunks.push(Buffer.from(chunk));
+  }
   const text = Buffer.concat(chunks).toString("utf8");
   return text ? JSON.parse(text) : null;
 }

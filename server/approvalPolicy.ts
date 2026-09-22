@@ -38,7 +38,7 @@ function envEnabled(name: string, defaultValue = true) {
 
 function logAutoApproval(message: string) {
   if (envEnabled("CODEX_WEB_APPROVAL_LOG", true)) {
-    console.log(`[codex-remote-console approval] ${message}`);
+    console.log(`[coding-agent-console approval] ${message}`);
   }
 }
 
@@ -168,11 +168,14 @@ function isSafeReadOnlySegment(tokens: string[]) {
   if (!readOnlyCommands.has(command)) return false;
 
   if (command === "find") {
-    return !segment.some((token) => ["-delete", "-exec", "-execdir", "-ok", "-okdir"].includes(token));
+    return !segment.some((token) =>
+      ["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprintf", "-fprint", "-fprint0", "-fls"].includes(token)
+    );
   }
 
   if (command === "sed") {
-    return !segment.some((token) => token === "-i" || token.startsWith("-i") || token === "--in-place");
+    if (segment.some((token) => token === "-i" || token.startsWith("-i") || token === "--in-place")) return false;
+    return !segment.some((token) => /(?:^|[\n;])\s*(?:\d+(?:,\d+)?)?w(?:[\s/]|$)/.test(token));
   }
 
   if (command === "git") {

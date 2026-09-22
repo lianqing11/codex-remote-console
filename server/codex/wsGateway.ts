@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import WebSocket from "ws";
 import { BaseCodexGateway } from "./baseGateway";
+import { codexChildEnvironment } from "./stdioSupport";
 import type { JsonRpcNotification, JsonRpcRequest, JsonRpcResponse } from "../types";
 
 function delay(ms: number) {
@@ -55,7 +56,7 @@ export class WsCodexGateway extends BaseCodexGateway {
   protected async startTransport(onMessage: (message: JsonRpcRequest | JsonRpcNotification | JsonRpcResponse) => void) {
     const port = await freePort();
     const child = spawn("codex", ["app-server", "--listen", `ws://127.0.0.1:${port}`], {
-      env: process.env,
+      env: codexChildEnvironment(process.env),
       stdio: ["ignore", "pipe", "pipe"]
     });
     this.child = child;
