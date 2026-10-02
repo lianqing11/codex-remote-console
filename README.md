@@ -1,186 +1,182 @@
 # Coding Agent Console
 
-[![Node.js](https://img.shields.io/badge/node-%3E%3D18.18-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/node-24-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Next.js](https://img.shields.io/badge/next.js-15-black?logo=next.js)](https://nextjs.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-_Self-hosted web UI for Codex, Cursor Agent, and Claude Code on the machine where your repo and environment already live._
+**A self-hosted browser workspace for Codex, Cursor Agent, and Claude Code.**
 
-Coding agents stay on the server (GPU box, workstation, lab). The browser provides one console for provider-scoped sessions, streaming output, safe runtime controls, and diffs. Codex uses `codex app-server`; Cursor uses the locally authenticated `cursor-agent` CLI; Claude uses the official `claude` CLI (`thread`/`turn`, `--session-id` / `--resume`).
+English · [简体中文](README.zh-CN.md)
 
-![Coding Agent Console overview](docs/images/console-overview.svg)
+Keep your repositories, coding agents, and development environment on your workstation or remote server. Use a browser to send tasks, follow live output, answer Codex approvals, browse files, and review changes—from a desktop or phone. Accepted queued tasks continue when you close the tab, as long as the server and agent processes keep running.
 
-*The existing Codex workflow remains available; Cursor and Claude sessions use the same workspace console with provider-specific controls.*
+![Console workflow overview](docs/images/console-overview.svg)
+
+[Quick start](#quick-start) · [Features](#features) · [Provider support](#provider-support) · [Deployment](#deployment) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting)
 
 ## Features
 
-- Choose Codex, Cursor Agent, or Claude Code per session. Switching providers creates a new empty session in the same workspace and never migrates context.
-- Cursor CLI execution modes are native-session scoped. Switching a Cursor session between Agent, Plan, and Ask creates and selects a new empty Cursor session in the same workspace so the CLI cannot silently remain in the previous read-only mode.
-- Start, resume, rename, archive, and manage provider-scoped sessions; runs continue when the tab closes.
-- Project picker (suggestions + safe directory browsing—no arbitrary file dumps).
-- WebSocket streaming of normalized messages, tools, run state, and provider diagnostics.
-- Durable per-session server queue: accepted text prompts are committed to local SQLite, continue after the browser closes, and pause safely on failure, Stop, approval, or uncertain restart recovery. A compact composer queue shows running, waiting, paused, failed, and needs-review work with Resume, Retry, and Remove actions; session rows surface queued and paused state without turning the console into a dashboard.
-- Project Files workspace with lazy directory browsing, direct server-directory uploads, GFM Markdown preview/source, and line-numbered Python/code viewing.
-- Codex keeps model, reasoning, sandbox, approval, service-tier, and collaboration controls.
-- The header shows the live standard Codex account bucket (used percentage and UTC reset time) when the current Codex login exposes rate-limit data.
-- Cursor sessions show the same header usage pill from the signed-in `cursor-agent` account: remaining included spend and the billing-cycle reset time, refreshed after each turn and every 45 seconds.
-- Cursor provides model plus native Agent, Plan, and Ask modes. Agent mode is visibly identified as sandboxed auto-run; Plan and Ask remain read-only.
-- Claude Code uses the same thread/turn console API as Codex, with Plan mode (`--permission-mode plan`) and Agent mode (`acceptEdits`) on the same session. Ask mode and browser approvals are not exposed in this first cut.
-- Codex browser approvals and `request_user_input` continue to work; unsupported controls are hidden for Cursor and Claude instead of simulated.
-- Non-blocking, best-effort Git snapshots each turn + inline and workspace diff; slash commands (`/diff`, `/review`, `/model`, `/permissions`, and others).
-- Optional Feishu turn-completion notify: one private group per Codex, Cursor Agent, or Claude Code session via `lark-cli`, with the full final answer split across ordered markdown messages when needed.
-- Configurable base path for reverse proxies.
+| What you want to do | What the console provides |
+| --- | --- |
+| Work with different agents | Codex, Cursor Agent, and Claude Code with separate sessions and provider-specific controls. |
+| Keep work moving | A durable SQLite queue per session, with running/waiting/paused states and Resume, Retry, and Remove actions. |
+| Follow long tasks | Streaming Markdown, tool activity, collapsible turns titled with your prompt, and request timing when available. |
+| Return to a conversation | Recent sessions, browser Back/Forward navigation, session links, tab-local text draft recovery, and history loaded in batches. |
+| Inspect the workspace | Directory browsing, Markdown preview/source, line-numbered code, project uploads, and inline/workspace Git diffs. |
+| Supply context | Up to eight attachments per turn through the picker, paste, or drag-and-drop; images remain visual inputs. |
+| Make the UI comfortable | Light, Dark, and System themes; Green, Blue, Purple, and Amber accents; Minimal and Detailed phone layouts. |
+| Track usage | Codex account usage and Cursor included-spend indicators when the signed-in provider exposes them. |
+| Get optional notifications | Feishu/Lark session groups with final answers and Codex Plan input-request notices. |
 
-## Requirements
+### Recent improvements
 
-Node **18.18+** and at least one available provider for the same OS user that runs this app:
+- **More responsive conversations:** immediate first text, bounded streaming updates, independent provider-list loading, and fewer redundant history and queue refreshes.
+- **Better session recovery:** bounded Codex history reads, corrected Recent ordering, connection heartbeat/reconnect handling, and drafts scoped to each provider/session.
+- **Clearer task inspection:** improved Claude tool rendering, user-prompt titles on expanded turns, more room for conversation content, and corrected usage-pill sizing.
+- **Long-session controls:** Codex resident-thread reuse when settings match, configurable automatic compaction, manual compaction, and an editable handoff for a fresh conversation.
+- **Mobile and appearance updates:** persistent theme preferences, Sessions/Chat/Tools navigation, and keyboard-aware phone layout. Native iPhone keyboard behavior still requires real-device verification.
 
-- `codex` on `PATH`, authenticated for Codex sessions.
-- `cursor-agent` on `PATH`, logged in for Cursor sessions.
-- `claude` on `PATH`, authenticated with `claude auth login` for Claude sessions.
+The Files workspace currently provides browsing, previews, uploads, and diffs. An embedded VS Code/code-server editor is not included.
 
-Provider health is independent. A missing or logged-out Cursor or Claude CLI does not prevent Codex from starting, and a Codex startup failure does not disable the other providers.
+## Provider support
+
+Install and authenticate the providers you want to use **as the same OS user that runs the console**. Each provider reports its own health; one unavailable CLI does not disable the others.
+
+| Capability | Codex | Cursor Agent | Claude Code |
+| --- | --- | --- | --- |
+| Local executable | `codex` | `cursor-agent` | `claude` |
+| Backend | `codex app-server` | Native CLI chats and stream JSON | CLI session IDs/resume and stream JSON |
+| Execution modes | Agent / Plan | Agent / Plan / Ask | Agent / Plan |
+| Runtime controls | Model, reasoning, sandbox, approvals, service tier | Model and execution mode | Provider-specific model/mode controls |
+| Browser approval/input UI | Supported | Not exposed | Not exposed |
+| Switching modes | Session runtime settings | Creates a new empty Cursor session | Keeps the same session |
+
+Switching **providers** always creates a new empty session in the same workspace. Context is not transferred between providers.
+
+Cursor Agent runs with `--sandbox disabled --trust`; it has the Node service user's filesystem access. Cursor Plan and Ask are read-only modes. Claude Agent uses `acceptEdits`, and Claude Plan uses `plan`. Unsupported controls are hidden.
 
 ## Quick start
 
+Use **Node.js 24** (verified with 24.12.0), npm, Git, and at least one authenticated provider CLI. The server uses built-in `node:sqlite` and `process.loadEnvFile`; Node 18 is not supported by this implementation.
+
 ```bash
-npm install
-CODEX_WEB_PASSWORD='change-me' PORT=3032 npm run dev
+git clone https://github.com/lianqing11/codex-remote-console.git
+cd codex-remote-console
+npm ci
+cp .env.example .env.local
 ```
 
-Open `http://<host>:3032` (defaults bind `0.0.0.0` for LAN / proxy).
+Edit `.env.local` before starting:
 
-**Production:**
+```dotenv
+HOST=127.0.0.1
+PORT=3032
+CODEX_WEB_PASSWORD=replace-with-a-strong-password
+CODEX_WEB_SECRET=replace-with-a-long-random-secret
+```
+
+Then run:
+
+```bash
+npm run dev
+```
+
+Open **http://127.0.0.1:3032**, sign in, select a project directory and provider, and send your first task. For a remote server, use a private tunnel or the reverse-proxy setup below. The server loads `.env.local` automatically; existing process environment variables take precedence.
+
+> This is an alpha tool for a trusted private deployment. Agent commands run with the Node service user's permissions. Use authentication and TLS or a private tunnel, and keep credentials out of Git. Project-root restrictions apply to file APIs; they are not an agent sandbox or a multi-tenant security boundary.
+
+## Deployment
+
+### Production
+
+With authentication already configured in `.env.local`:
 
 ```bash
 npm run build
-CODEX_WEB_PASSWORD='change-me' CODEX_WEB_SECRET='use-a-long-random-secret' PORT=3032 npm run start
+npm run start
 ```
 
-`CODEX_WEB_TOKEN` works instead of password. Production refuses to start without password or token.
+Production requires `CODEX_WEB_PASSWORD` or `CODEX_WEB_TOKEN`. Use a separate random `CODEX_WEB_SECRET` for signed cookies. Set `CODEX_WEB_COOKIE_SECURE=on` when serving over HTTPS.
 
-## Security
+### Reverse proxy and subpaths
 
-**Alpha.** For private VPN / SSH tunnel / trusted LAN or reverse proxy with your own auth and TLS—not a multi-tenant public service.
-
-Whoever reaches the UI runs as the same user as the Node process (projects, shell, Codex and Cursor credentials). Set `CODEX_WEB_PASSWORD` or `CODEX_WEB_TOKEN`, use a strong `CODEX_WEB_SECRET` for cookie signing, and never commit real secrets. Cursor Agent mode passes `--sandbox disabled --trust` and intentionally omits `--force` for compatibility with the current host kernel. This is not a filesystem boundary: Cursor tools may read or modify paths outside the selected workspace with the Node service user's permissions. Use Cursor Agent mode only on a private deployment where that access is explicitly accepted; Ask and Plan remain read-only alternatives.
-
-## Screenshots
-
-| Login | Flow | Approvals |
-| --- | --- | --- |
-| ![Password login](docs/images/login.png) | ![Remote control flow](docs/images/remote-flow.svg) | ![Approvals in browser](docs/images/approval-flow.svg) |
-
-## How it works (short)
-
-The custom server (`server/index.ts`) serves Next.js + WebSockets at `/ws` and exposes provider-qualified browser requests. The Codex adapter wraps `codex app-server --listen stdio://` (`server/codex/stdioGateway.ts`) without rewriting its thread, turn, approval, or notification semantics. The Cursor adapter creates Web-owned native chats, launches `cursor-agent --output-format stream-json`, and persists only the normalized UI transcript and console-owned metadata. Native Cursor context continues through `--resume`; prior text is not reinjected. Claude speaks the same `thread/*` and `turn/*` methods as Codex, spawning `claude -p --output-format stream-json` with `--session-id` on the first turn and `--resume` after that, and reading transcripts from `~/.claude/projects`.
-
-HTTP/WebSocket routes: [docs/API.md](docs/API.md).
-
-## Behind a reverse proxy (subpath)
-
-Build and run with the same base path, e.g. `/codex_web_cursor/`:
+Use the same base path at build time and runtime:
 
 ```bash
 NEXT_PUBLIC_BASE_PATH=/codex_web_cursor npm run build
-NODE_ENV=production NEXT_PUBLIC_BASE_PATH=/codex_web_cursor CODEX_WEB_PASSWORD='change-me' PORT=3032 npm run start
+NEXT_PUBLIC_BASE_PATH=/codex_web_cursor npm run start
 ```
 
-Or use **`npm run dev:proxy`** / **`npm run start:proxy`** for the bundled defaults. Proxy: `https://your-host.example/codex_web_cursor/` → `http://127.0.0.1:3032`.
+Configure your proxy to expose `https://your-host.example/codex_web_cursor/` and forward to the loopback listener, preserving WebSocket upgrades and stripping the `/codex_web_cursor` prefix from upstream requests. The custom HTTP/WebSocket server accepts paths at its root; the Next.js assets use the configured base path.
 
-## Configuration & scripts
+The bundled `dev:proxy`, `build:proxy`, and `start:proxy` scripts use `/codex_web_cursor` and port 3032. `start:proxy` rebuilds first. Wait until active work and queues are idle before restarting an existing service.
 
-**Env:** see [`.env.example`](.env.example) for variables (`PORT`, `HOST`, `NEXT_PUBLIC_BASE_PATH`, auth, cookie secret, gateway, auto-approve flags, optional `CODEX_WEB_PROJECT_ROOTS`, `CODEX_WEB_PROXY_URL`, `CODING_AGENT_CONSOLE_STATE_DIR`, Feishu notify flags, etc.). `CODEX_WEB_PROXY_URL` fills missing HTTP/HTTPS/WebSocket proxy variables for spawned Codex, Cursor, and Claude processes without overriding variables already supplied by the process manager.
+## Configuration
 
-**Agent attachments:** **Attach to agent** in the Composer accepts up to eight files per turn through the picker, paste, or drag-and-drop. Files are streamed to the server first and stored with private permissions under `CODING_AGENT_CONSOLE_STATE_DIR/uploads` (default `~/.local/share/coding-agent-console/uploads`). Image files remain native visual inputs; other files are passed to Codex/Cursor/Claude as server-side file references. Removing an unsent attachment also removes its server copy.
+See [`.env.example`](.env.example) for the full configuration template. Keep actual secrets, paths, and proxy endpoints in `.env.local` or the process manager environment.
 
-**Project uploads:** open **Files**, browse to the destination directory, and choose **Upload here**. These files are written into the selected project directory and remain there independently of a chat turn. Existing files require an explicit replacement confirmation. Both upload paths use the `CODEX_WEB_UPLOAD_MAX_BYTES` per-file limit, which defaults to 50 MiB and is capped at 100 MiB.
+| Variable | Purpose |
+| --- | --- |
+| `HOST`, `PORT` | Listener address/port. Set explicitly; code defaults are `0.0.0.0:3000`, while the example uses port 3032. |
+| `CODEX_WEB_PASSWORD` / `CODEX_WEB_TOKEN` | Console login credentials. |
+| `CODEX_WEB_SECRET` | Cookie-signing secret. |
+| `NEXT_PUBLIC_BASE_PATH` | Reverse-proxy subpath, identical at build and runtime. |
+| `CODEX_WEB_PROJECT_ROOTS` | Restrict project resolve/list/read APIs to configured roots. |
+| `CODING_AGENT_CONSOLE_STATE_DIR` | Console-owned state; defaults to `~/.local/share/coding-agent-console`. |
+| `CODEX_WEB_UPLOAD_MAX_BYTES` | Per-file upload limit; default 50 MiB, maximum 100 MiB. |
+| `CODEX_WEB_AUTO_COMPACT_TOKEN_LIMIT` | Managed Codex stdio compaction threshold; default `200000`, integer ≥ `10000`, or `inherit`. |
+| `CODEX_WEB_PROXY_URL` | Upstream for the local selective proxy used by spawned agents; official OpenAI/Cursor/Anthropic hosts use it, other traffic goes direct. |
+| `CODEX_WEB_FEISHU_NOTIFY` | Set to `on` to enable optional Feishu notifications. |
 
-**Feishu notify:** set `CODEX_WEB_FEISHU_NOTIFY=on` in `.env.local` and ensure `lark-cli` bot login works. The custom server loads `.env.local` before it snapshots runtime configuration. On each terminal Codex, Cursor Agent, or Claude Code turn, it creates/reuses a provider-specific private group (`Codex · {session}`, `Cursor Agent · {session}`, or `Claude Code · {session}`) and sends the complete final answer. Codex Plan `request_user_input` questions are sent to the same private group with their choices as a one-way notice; the configured user returns to the web Console to submit the answer. Other approval requests do not trigger this notice. Long answers and question sets are split into numbered markdown messages at natural text boundaries; deterministic idempotency keys prevent already-delivered parts from duplicating after a retry. `CODEX_WEB_FEISHU_CHUNK_MAX_BYTES` controls the per-part body size. Failed and cancelled Cursor runs are terminal notifications too.
+### Files and attachments
 
-**npm:** `npm run dev` · `npm run build` · `npm run start` · `npm run check` / `npm run check:proxy` · `npm run test:all` · `npm run test:uploads` · `npm run test:server-env` · `npm run test:feishu` · `npm run test:cursor-feishu` · `npm run test:warm-pool` · `npm run test:cursor` · `npm run test:claude` · `npm run test:provider-ui` · `npm run test:provider-protocol` · `npm run test:auth-isolation` · `npm run generate:codex-protocol`.
+**Attach to agent** uploads temporary context into the private state directory. Removing an unsent attachment removes its server copy. Text drafts survive a tab reload through `sessionStorage`; uploaded attachments are not restored as drafts.
 
-Approval behavior (read-only auto-approve, MCP, destructive commands) is summarized in `.env.example` and implemented in `server/approvalPolicy.ts`.
+**Files → Upload here** writes directly into the selected project directory. These files remain independently of a conversation. Replacing an existing file requires confirmation.
+
+### Queues and long sessions
+
+Accepted text prompts are saved in SQLite before dispatch. Failure, Stop, approval, or uncertain restart recovery can pause the queue for review. Closing the browser does not cancel server-side work; stopping the server can interrupt it.
+
+Codex reuses a resident thread only when its resume settings match. Changing model, permissions, or other resume settings triggers a real resume. Managed stdio compaction settings apply after an idle service restart; external WebSocket gateways retain their own configuration. Compaction may lose older detail and can take time. A fresh session with an editable handoff is useful for a separate task.
+
+Queue-backed requests retain admission, dispatch, resume, start, first-output/tool, and terminal timing when available. Older and direct runs may lack these fields. Cumulative token usage is shown separately from the last request's input.
+
+### Optional Feishu/Lark notifications
+
+Enable `CODEX_WEB_FEISHU_NOTIFY=on`, configure `CODEX_WEB_FEISHU_USER_OPEN_ID` privately, and authenticate the `lark-cli` bot. Each provider session gets a private group for terminal-turn notifications. Full final answers are split into ordered messages when needed; `CODEX_WEB_FEISHU_CHUNK_MAX_BYTES` controls chunk size.
+
+Codex Plan input requests are also posted with their choices. Submit answers in the web console; the notice is one-way. Other approval requests do not trigger this notice. Failed and cancelled Cursor turns also generate terminal notifications.
+
+## Development and verification
+
+```bash
+npm run typecheck
+npm run test:all
+npm run build
+```
+
+`npm run check` combines type checking and a build; `npm run check:proxy` builds for the bundled subpath. Use an isolated build directory (`NEXT_DIST_DIR=.next-review`) when a running service uses the default build output.
+
+Browser checks require Python, Playwright, Chromium, and a running test frontend. For example, `npm run test:playwright-appearance` exercises themes, phone layouts, streaming, reconnects, and expired authentication with mocked provider events. Configure `CODING_AGENT_CONSOLE_TEST_URL` and the normal authentication environment. Reports go to ignored `.codex_web/ui-verification/`. Browser fixtures do not establish live provider or native iPhone behavior.
+
+The custom server is in [`server/index.ts`](server/index.ts), provider adapters in [`server/providers`](server/providers), and the Codex gateway in [`server/codex`](server/codex). See [the API reference](docs/API.md) for HTTP/WebSocket routes and [`package.json`](package.json) for focused test scripts.
 
 ## Troubleshooting
 
-| Symptom | Likely fix |
+| Symptom | What to check |
 | --- | --- |
-| `codexVersion` unavailable | `codex` not on PATH for the Node process. |
-| Cursor provider disabled | Confirm `cursor-agent --version` and `cursor-agent --list-models` work for the Node service user. |
-| Claude provider disabled | Confirm `claude --version` and `claude auth status` work for the Node service user. |
-| Production auth error | Set `CODEX_WEB_PASSWORD` or `CODEX_WEB_TOKEN`. |
-| `Timed out waiting for codex app-server` | Confirm `codex app-server` works from the same environment; check logs for `[codex-app-server]`. |
-| Turn stays active with an OpenAI connection error | Set `CODEX_WEB_PROXY_URL` (or standard proxy variables) in the server environment, then restart the service. |
-| Broken assets/WebSocket behind proxy | `NEXT_PUBLIC_BASE_PATH` must match the proxy path at **build** and **run** time. |
-| Cursor transcript missing after restart | Check permissions and free space under `CODING_AGENT_CONSOLE_STATE_DIR` or `~/.local/share/coding-agent-console`. |
+| Missing `node:sqlite` or `loadEnvFile` | Use Node 24 for the service process, not only your interactive shell. |
+| A provider is unavailable | Verify its executable and login under the service user; for Claude, check `claude auth status`; for Cursor, check `cursor-agent --list-models`. |
+| Production refuses to start | Set `CODEX_WEB_PASSWORD` or `CODEX_WEB_TOKEN`. |
+| Codex app-server startup times out | Run `codex app-server` in the same environment and inspect `[codex-app-server]` logs. |
+| Agent connection errors | Check the provider's network access and optional proxy configuration; apply environment changes during an idle restart. |
+| Broken assets or WebSocket behind a proxy | Match the build/runtime base path, strip the prefix upstream, and forward WebSocket upgrades. |
+| Queue is paused after failure or restart | Inspect the item and use Resume/Retry after checking whether the previous action completed. |
+| Missing Cursor transcript after restart | Check state-directory permissions, free space, and whether the service user/state path changed. |
 
-## Contributing & license
+## Contributing and license
 
-Issues and PRs welcome—small changes, tests where behavior shifts, avoid dependency bloat.
+Issues and focused pull requests are welcome. Include reproduction steps and relevant checks; keep credentials, runtime state, uploads, logs, and build output out of commits.
 
-**License:** MIT — [LICENSE](LICENSE).
-
-**GitHub About (suggested):** Self-hosted browser console for Codex and Cursor Agent on a remote machine.
-**Topics:** `codex`, `codex-cli`, `cursor-agent`, `remote-development`, `webui`, `ai-coding`, `self-hosted`, `nextjs`, `websocket`.
-
-### Codex latency and long sessions
-
-Queued Codex turns reuse resident threads when the complete resume settings match the last successful resume. Model, service tier, permission, sandbox, or other resume-setting changes still trigger a real resume. Explicit permission refresh always forces a resume. The cache is cleared on gateway disconnect and thread eviction; it never treats a failed resume as applied.
-
-The Web-managed stdio app-server defaults to `model_auto_compact_token_limit=200000`, independently of the terminal's config. Set `CODEX_WEB_AUTO_COMPACT_TOKEN_LIMIT` to an integer of at least 10000 to tune this threshold, or `inherit` to use the CLI config. Restart the Web service while its queue is idle to apply it. External WebSocket gateways retain their own configuration. Compaction summarizes older context and can lose detail; it can also add a one-time wait to a large existing session. For independent tasks, a new session avoids carrying unrelated history. This threshold is a latency tradeoff, not a measured optimal value or a guarantee of upstream response time.
-
-### Session responsiveness and recovery
-
-- Streamed Markdown refreshes at a bounded interval, including continuous output.
-- The first nonempty text fragment renders immediately; later fragments coalesce
-  at approximately 80 ms, and completion displays the full response immediately.
-- Provider session lists update independently while the selected session restores.
-  Queue state uses the server push, with one fallback query after a one-second wait.
-- Provider snapshots share a five-second cache and concurrent status checks.
-  Backends advertising `wsHeartbeat` support `connection:ping` using the existing
-  reply format. Visible, idle tabs check every 30 seconds; focus and network recovery
-  check immediately, with a five-second timeout before reconnecting.
-- Escape dismisses input suggestions without clearing the draft or stopping a run.
-- Text drafts are scoped to each provider/session (and each new-session directory)
-  in browser `sessionStorage`. Reloading the tab restores them. Uploaded attachments
-  still follow the existing upload lifecycle and are not restored as text drafts.
-- Session links carry provider, session and workspace tab; browser Back/Forward and
-  reload restore that location. Session rows support opening in a new tab.
-- New Codex settings default to `medium`; existing saved effort choices are retained.
-- History expands in batches of 40 rounds. Runtime offers conversation compaction
-  and an editable handoff containing recent message excerpts, without auto-sending it.
-- Queue-backed requests record server-side admission, dispatch, resume, start, first
-  text output/tool and terminal timestamps. Timing is retained with the queue item;
-  retry starts a fresh attempt. Older and direct/non-queue runs may lack this data.
-  Cumulative token consumption is displayed separately from the last request input.
-
-`npm run test:session-experience` checks draft storage, URL encoding and token usage
-semantics. `python scripts/playwrightSessionExperience.py` uses deterministic mock
-provider events against the real UI to check continuous streaming, draft recovery,
-history pagination, navigation and responsive geometry without starting agent tasks.
-Set `CODING_AGENT_CONSOLE_TEST_URL` and the normal authentication environment. The
-optional `CODING_AGENT_CONSOLE_FRONTEND_URL` tests a candidate frontend before release.
-
-### Appearance and phone layout
-
-The Appearance control offers Light, Dark, System, and Green, Blue, Purple or Amber
-accents. Validated preferences are stored under `coding-agent-console.appearance.v1`
-in this browser and applied before the first paint. Storage denial falls back to
-Light/Green without blocking editing or sending.
-
-Phones default to Minimal with Sessions, Chat and Tools navigation. Tools contains
-files, changes, session settings, working directory and Appearance; Appearance can
-switch back to Detailed. Desktop retains the full workspace. Session changes on a
-phone leave keyboard opening to an explicit input tap. Drafts, attachments and
-editing selections remain associated with their session while navigating; theme
-and layout changes preserve them. Native iPhone keyboard behavior still requires
-device verification.
-
-`npm run test:appearance` checks preference parsing and prepaint initialization;
-`npm run test:snapshots` checks cache coalescing, expiry and invalidation. Run
-`npm run test:playwright-appearance` against an isolated frontend to verify themes,
-phone layouts, independent lists, pushed queues, draft recovery, streaming paint,
-reconnection and expired authentication with mocked APIs and provider frames.
-Its screenshots and JSON report use the ignored `.codex_web/ui-verification/`
-directory. Browser tests require Playwright and an installed Chromium browser.
+Released under the [MIT License](LICENSE).
