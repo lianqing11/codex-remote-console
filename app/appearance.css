@@ -109,8 +109,13 @@ html[data-theme="dark"] { --on-accent: #101720; }
   html[data-mobile-layout="minimal"] .mobileSessionStepper,
   html[data-mobile-layout="minimal"] .topbarRename,
   html[data-mobile-layout="minimal"] .sessionModelInline,
-  html[data-mobile-layout="minimal"] .usageDetailsControl,
   html[data-mobile-layout="minimal"] .contextHint { display: none; }
+  /* Phones keep quota visible in either layout: percentages only, details on tap. */
+  .topbar .usageDetailsControl :is(.claudeUsagePill, .cursorUsagePill, .codexUsagePill) {
+    display: inline-flex; grid-column: auto; grid-row: auto; width: auto; min-height: 32px; padding: 4px 8px;
+  }
+  .topbar .usageDetailsControl :is(small, svg, .codexUsageMeter) { display: none; }
+  .topbar .topActions > .usageDetailsControl { order: -1; }
   html[data-mobile-layout="minimal"] .topActions .statusPill.online { display: none; }
   html[data-mobile-layout="minimal"] .topbarTitleText > strong { font-size: 14px; }
   html[data-mobile-layout="minimal"] .runProgress:not(.isRunning):not(.isProblem) { display: none; }
