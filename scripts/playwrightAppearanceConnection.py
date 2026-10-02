@@ -93,7 +93,7 @@ def main():
         independent_ms = round((time.monotonic() - started) * 1000)
         assert delayed, "slow-provider scenario was not exercised"
         assert page.locator(".turnPanel").count() == 40
-        assert page.locator(".turnPanel").first.locator(".turnCollapsedTitle").is_hidden()
+        assert "Unique user request 44" in page.locator(".turnPanel").first.locator("summary").inner_text()
         assert page.locator(".turnPanel").first.locator(".userMessage").inner_text().count("Unique user request 44") == 1
         for ws, message in delayed: reply(ws, message, {"data": [], "nextCursor": None})
         page.wait_for_timeout(1100)

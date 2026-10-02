@@ -297,8 +297,7 @@ export const TurnPanel = memo(function TurnPanel({
     >
       <summary>
         <span className="turnSummaryMain">
-          <strong className="turnCollapsedTitle">{title}</strong>
-          <strong className="turnExpandedTitle">{turnLive ? "Current task" : "Conversation"}</strong>
+          <strong>{title}</strong>
           {time ? <small>{formatTime(time)}</small> : null}
         </span>
         <span className="turnSummaryMeta">

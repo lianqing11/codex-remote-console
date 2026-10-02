@@ -43,9 +43,6 @@ html[data-theme="dark"] { --on-accent: #101720; }
 .turnList { padding: 20px; }
 .turnPanel { width: 100%; max-width: 960px; margin-inline: auto; border-radius: var(--r-md); box-shadow: none; }
 .turnPanel > summary { padding: 10px 14px; }
-.turnSummaryMain .turnExpandedTitle { display: none; }
-.turnPanel[open] .turnCollapsedTitle { display: none; }
-.turnPanel[open] .turnExpandedTitle { display: block; color: var(--muted); font-weight: 500; }
 .turnBody { padding: 16px; }
 .message pre, .markdownBody { font-size: 14px; line-height: 1.7; }
 .markdownBody > :first-child { margin-top: 0; }
