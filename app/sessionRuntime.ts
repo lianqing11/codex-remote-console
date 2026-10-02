@@ -54,7 +54,7 @@ export const defaultRuntimeSettings: SessionRuntimeSettings = {
   provider: "codex",
   mode: "default",
   model: "",
-  reasoningEffort: "xhigh",
+  reasoningEffort: "medium",
   serviceTier: null,
   approvalPolicy: null,
   sandboxMode: null
@@ -263,14 +263,11 @@ export function streamEventToNotification(raw: unknown, provider: ProviderId = "
     const text = typeof eventRecord.delta === "string"
       ? eventRecord.delta
       : String(eventRecord.text || eventRecord.message || "");
-    return {
-      method: "item/agentMessage/delta",
-      params: {
-        ...base,
-        itemId: String(eventRecord.itemId || `${turnId}-assistant`),
-        delta: text
-      }
-    };
+    const itemId = String(eventRecord.itemId || `${turnId}-assistant`);
+    if (eventRecord.delta === false) {
+      return { method: "item/completed", params: { ...base, item: { id: itemId, type: "agentMessage", text } } };
+    }
+    return { method: "item/agentMessage/delta", params: { ...base, itemId, delta: text } };
   }
   if (event === "rate_limits") {
     return { method: "account/rateLimits/updated", params: { ...base, provider, ...(recordOf(eventRecord.result) || {}) } };
@@ -289,6 +286,7 @@ export function streamEventToNotification(raw: unknown, provider: ProviderId = "
           type: "toolCall",
           tool: String(eventRecord.toolName || eventRecord.name || eventRecord.tool || "tool"),
           status,
+          ...(eventRecord.command ? { command: String(eventRecord.command) } : {}),
           output: String(eventRecord.output || eventRecord.summary || "")
         }
       }

@@ -45,18 +45,26 @@ type ClaudeRun = {
   runId: string;
   child: ChildProcess;
   sessionId: string;
+  startedAt: number;
+  stream: ClaudeStreamState;
   finalized: boolean;
   failed: boolean;
   stderr: string;
 };
 
+// Claude streams one content block at a time. Item ids are `${messageId}-${blockIndex}`
+// so live deltas, completed blocks and the JSONL transcript all address the same item.
+type ClaudeStreamState = { messageId: string; blocks: Map<string, number>; tools: Map<string, { toolName: string; command: string }> };
+
 type ClaudeStreamEvent = {
   event: AgentNormalizedEvent["event"];
   runId: string;
+  itemId?: string;
   text?: string;
   delta?: boolean;
   toolName?: string;
   toolCallId?: string;
+  command?: string;
   summary?: string;
   status?: AgentRunStatus;
   message?: string;
@@ -147,12 +155,21 @@ function textOf(value: unknown): string {
   return "";
 }
 
+// Tool inputs are objects; show the field a reader scans for, else the raw JSON.
+function toolInputText(input: unknown) {
+  const row = record(input);
+  const key = ["command", "file_path", "path", "pattern", "url", "query", "description", "prompt"]
+    .find((name) => typeof row[name] === "string" && row[name]);
+  return key ? String(row[key]) : Object.keys(row).length ? JSON.stringify(row) : "";
+}
+
 export function projectSlug(cwd: string) {
   return cwd.replace(/[^A-Za-z0-9]/g, "-");
 }
 
 export function parseClaudeTranscript(raw: string): { turns: ClaudeTurn[]; cwd: string; preview: string; title: string; updatedAt: number } {
   const turns: ClaudeTurn[] = [];
+  const blockCounts = new Map<string, number>();
   let cwd = "";
   let updatedAt = 0;
   let current: ClaudeTurn | null = null;
@@ -211,23 +228,25 @@ export function parseClaudeTranscript(raw: string): { turns: ClaudeTurn[]; cwd: 
     }
 
     if (type === "assistant" || type === "assistant_text") {
+      // Keep each text block as its own message: progress notes stay in the work log and
+      // only the last one becomes the final answer.
+      const messageId = String(message.id || row.uuid || `${current.id}-${current.items.length}`);
       for (const block of blocks.length ? blocks : [{ type: "text", text: textOf(content) }]) {
+        const index = blockCounts.get(messageId) || 0;
+        blockCounts.set(messageId, index + 1);
         if (block.type === "tool_use") {
           current.items.push({
-            id: String(block.id || `${current.id}-tool-${current.items.length}`),
+            id: String(block.id || `${messageId}-${index}`),
             type: "toolCall",
             tool: String(block.name || "tool"),
             status: "completed",
-            output: textOf(block.input)
+            command: toolInputText(block.input),
+            output: ""
           });
           continue;
         }
-        const text = textOf(block);
-        if (!text) continue;
-        const assistantId = `${current.id}-assistant`;
-        const assistant = current.items.find((item) => item.id === assistantId);
-        if (assistant) assistant.text = `${assistant.text || ""}${text}`;
-        else current.items.push({ id: assistantId, type: "agentMessage", text });
+        const text = block.type === "text" ? textOf(block) : "";
+        if (text) current.items.push({ id: `${messageId}-${index}`, type: "agentMessage", text });
       }
     }
   }
@@ -237,15 +256,27 @@ export function parseClaudeTranscript(raw: string): { turns: ClaudeTurn[]; cwd: 
   return { turns, cwd, preview: title, title: title.slice(0, 80), updatedAt };
 }
 
-export function claudeStreamEvents(raw: unknown, runId: string): ClaudeStreamEvent[] {
+export function claudeStreamEvents(
+  raw: unknown,
+  runId: string,
+  state: ClaudeStreamState = { messageId: "", blocks: new Map(), tools: new Map() }
+): ClaudeStreamEvent[] {
   const row = record(raw);
   const type = String(row.type || row.event || "");
   const nested = record(row.event);
   const message = record(row.message);
   const content = Array.isArray(message.content) ? message.content.map(record) : [];
 
+  // Subagent traffic lives in its own transcript; mixing it in corrupts the main answer.
+  if (row.parent_tool_use_id) return [];
+
   if (type === "rate_limit_event") {
     return row.rate_limit_info ? [{ event: "rate_limits", runId, result: row.rate_limit_info }] : [];
+  }
+
+  if (nested.type === "message_start") {
+    state.messageId = String(record(nested.message).id || "");
+    return [];
   }
 
   if (type === "assistant" || type === "assistant_text") {
@@ -253,16 +284,18 @@ export function claudeStreamEvents(raw: unknown, runId: string): ClaudeStreamEve
       const text = textOf(content) || textOf(row.result || row.error);
       return text ? [{ event: "error", runId, message: text }] : [];
     }
+    const messageId = String(message.id || runId);
     const events: ClaudeStreamEvent[] = [];
     for (const block of content) {
+      const index = state.blocks.get(messageId) || 0;
+      state.blocks.set(messageId, index + 1);
       if (block.type === "tool_use") {
-        events.push({
-          event: "tool_started",
-          runId,
-          toolName: String(block.name || "tool"),
-          toolCallId: String(block.id || ""),
-          summary: textOf(block.input)
-        });
+        const tool = { toolName: String(block.name || "tool"), command: toolInputText(block.input) };
+        state.tools.set(String(block.id || ""), tool);
+        events.push({ event: "tool_started", runId, toolCallId: String(block.id || ""), ...tool });
+      } else if (block.type === "text" && textOf(block)) {
+        // The completed block replaces any streamed deltas, so dropped deltas self-heal.
+        events.push({ event: "assistant_text", runId, itemId: `${messageId}-${index}`, text: textOf(block), delta: false });
       }
     }
     return events;
@@ -273,16 +306,16 @@ export function claudeStreamEvents(raw: unknown, runId: string): ClaudeStreamEve
     const delta = record(block.delta);
     if (delta.type && delta.type !== "text_delta") return [];
     const text = typeof delta.text === "string" ? delta.text : "";
-    return text ? [{ event: "assistant_text", runId, text, delta: true }] : [];
+    const itemId = `${state.messageId || runId}-${Number(block.index) || 0}`;
+    return text ? [{ event: "assistant_text", runId, itemId, text, delta: true }] : [];
   }
 
   if (type === "user") {
-    return content.filter((block) => block.type === "tool_result").map((block) => ({
-      event: "tool_completed" as const,
-      runId,
-      toolCallId: String(block.tool_use_id || block.toolUseId || ""),
-      summary: textOf(block.content)
-    }));
+    return content.filter((block) => block.type === "tool_result").map((block) => {
+      const toolCallId = String(block.tool_use_id || block.toolUseId || "");
+      // Completion replaces the started item, so carry its name and input forward.
+      return { event: "tool_completed" as const, runId, toolCallId, ...state.tools.get(toolCallId), summary: textOf(block.content) };
+    });
   }
 
   if (type === "result") {
@@ -492,6 +525,13 @@ export class ClaudeProvider {
 
   private asThread(overlay: ClaudeOverlay, transcript: Awaited<ReturnType<typeof parseClaudeTranscript>>) {
     const title = overlay.title && overlay.title !== "New session" ? overlay.title : transcript.title || overlay.title;
+    // A reopened or reconnected page must merge history with the live stream, which is
+    // keyed by runId, instead of rendering the running turn twice.
+    const run = this.runs.get(overlay.id);
+    const last = transcript.turns.at(-1);
+    if (run && last && (last.startedAt || 0) >= run.startedAt) {
+      transcript.turns[transcript.turns.length - 1] = { ...last, id: run.runId, status: "inProgress", completedAt: null };
+    }
     return {
       thread: {
         id: overlay.id,
@@ -589,7 +629,11 @@ export class ClaudeProvider {
     if (this.runs.has(id)) throw new Error("Claude already has an active turn for this session.");
 
     const overlay = this.overlays.get(id) || this.overlay(id, stringParam(input, "cwd"));
-    const mode = input.mode === "plan" ? "plan" : overlay.mode;
+    const mode = input.mode === "plan"
+      ? "plan"
+      : input.mode === "agent" || input.mode === "default"
+        ? "agent"
+        : overlay.mode;
     const model = stringParam(input, "model") || overlay.model || defaultClaudeModel;
     const effort = stringParam(input, "effort") || stringParam(input, "reasoningEffort") || overlay.effort || defaultEffort;
     const runId = randomUUID();
@@ -622,10 +666,21 @@ export class ClaudeProvider {
 
     const child = spawn(this.command, args, {
       cwd: overlay.cwd || process.cwd(),
-      env: childProcessEnv(this.env),
+      // Every turn is a fresh process; connecting claude.ai account connectors adds ~2s
+      // of startup. Local MCP servers still load; set the variable to "true" to opt back in.
+      env: { ENABLE_CLAUDEAI_MCP_SERVERS: "false", ...childProcessEnv(this.env) },
       stdio: ["ignore", "pipe", "pipe"]
     });
-    const run: ClaudeRun = { runId, child, sessionId: id, finalized: false, failed: false, stderr: "" };
+    const run: ClaudeRun = {
+      runId,
+      child,
+      sessionId: id,
+      startedAt: now(),
+      stream: { messageId: "", blocks: new Map(), tools: new Map() },
+      finalized: false,
+      failed: false,
+      stderr: ""
+    };
     this.runs.set(id, run);
 
     let stdout = "";
@@ -665,7 +720,7 @@ export class ClaudeProvider {
       void this.persist();
     }
     const run = this.runs.get(sessionId);
-    for (const event of claudeStreamEvents(parsed, runId)) {
+    for (const event of claudeStreamEvents(parsed, runId, run?.stream)) {
       if (event.event === "error" && run) run.failed = true;
       if (event.event === "rate_limits") {
         this.lastRateLimit = event.result;
@@ -677,10 +732,12 @@ export class ClaudeProvider {
         sessionId,
         runId: event.runId,
         event: event.event,
+        itemId: event.itemId,
         text: event.text,
         delta: event.delta,
         toolName: event.toolName,
         toolCallId: event.toolCallId,
+        command: event.command,
         summary: event.summary,
         status: event.status,
         message: event.message,

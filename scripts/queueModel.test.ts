@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { activeQueueTurns, queueBarHasActions, queueStatusLabel, queueSummariesByThread, queueThreadSummary, type QueueSnapshot } from "../app/queueModel";
+import { activeQueueTurns, reconcileQueueActiveTurns, queueBarHasActions, queueStatusLabel, queueSummariesByThread, queueThreadSummary, type QueueSnapshot } from "../app/queueModel";
 
 const snapshot: QueueSnapshot = {
   items: [
@@ -93,5 +93,15 @@ assert.deepEqual([...activeQueueTurns({
   ],
   threads: snapshot.threads
 })], [["codex:thread-a", "turn-live"]]);
+
+const active = { "codex:thread-a": "turn-a", "codex:independent": "native-run" };
+assert.deepEqual(reconcileQueueActiveTurns(active, snapshot), { "codex:independent": "native-run" });
+assert.equal(active["codex:thread-a"], "turn-a", "terminal reconciliation must preserve the input snapshot");
+const newer = { "codex:thread-a": "new-native-run" };
+assert.equal(reconcileQueueActiveTurns(newer, snapshot), newer, "a late terminal push must not stop a newer native run");
+assert.deepEqual(reconcileQueueActiveTurns(active, {
+  items: [...snapshot.items, { ...snapshot.items[1], status: "running", runId: "next-queue-run" }],
+  threads: []
+}), { "codex:thread-a": "next-queue-run", "codex:independent": "native-run" });
 
 console.log("queue presentation model tests passed");

@@ -1,12 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import readline from "node:readline";
 import { BaseCodexGateway } from "./baseGateway";
-import { codexChildEnvironment, codexDiagnosticFromStderr } from "./stdioSupport";
+import { codexAppServerArgs, codexChildEnvironment, codexDiagnosticFromStderr } from "./stdioSupport";
 import type { JsonRpcNotification, JsonRpcRequest, JsonRpcResponse } from "../types";
 
 export class StdioCodexGateway extends BaseCodexGateway {
   private child: ChildProcess | null = null;
-  private lines: readline.Interface | null = null;
   private stderrBuffer = "";
 
   protected isOpen() {
@@ -37,7 +35,7 @@ export class StdioCodexGateway extends BaseCodexGateway {
 
   protected startTransport(onMessage: (message: JsonRpcRequest | JsonRpcNotification | JsonRpcResponse) => void) {
     return new Promise<void>((resolve, reject) => {
-      const child = spawn("codex", ["app-server", "--listen", "stdio://"], {
+      const child = spawn("codex", codexAppServerArgs(process.env), {
         env: codexChildEnvironment(process.env),
         stdio: ["pipe", "pipe", "pipe"]
       });
@@ -51,18 +49,23 @@ export class StdioCodexGateway extends BaseCodexGateway {
         callback();
       };
 
-      this.lines = readline.createInterface({
-        input: child.stdout!,
-        crlfDelay: Infinity
-      });
-      this.lines.on("line", (line) => {
-        if (!line.trim()) return;
-        try {
-          onMessage(JSON.parse(line) as JsonRpcRequest | JsonRpcNotification | JsonRpcResponse);
-        } catch (error) {
-          this.handleTransportError(
-            new Error(`Could not parse codex app-server message: ${error instanceof Error ? error.message : String(error)}`)
-          );
+      // Messages are "\n"-delimited. readline also splits on U+2028/U+2029, which JSON
+      // leaves unescaped, so a history containing them dropped the reply and hung the read.
+      let partial = "";
+      child.stdout!.setEncoding("utf8");
+      child.stdout!.on("data", (chunk: string) => {
+        const lines = chunk.split("\n");
+        lines[0] = partial + lines[0];
+        partial = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            onMessage(JSON.parse(line) as JsonRpcRequest | JsonRpcNotification | JsonRpcResponse);
+          } catch (error) {
+            this.handleTransportError(
+              new Error(`Could not parse codex app-server message: ${error instanceof Error ? error.message : String(error)}`)
+            );
+          }
         }
       });
 
@@ -74,8 +77,6 @@ export class StdioCodexGateway extends BaseCodexGateway {
       });
       child.on("exit", (code) => {
         if (this.stderrBuffer.trim()) this.consumeStderr("\n");
-        this.lines?.close();
-        this.lines = null;
         this.child = null;
         this.stderrBuffer = "";
         this.handleTransportClosed(`codex app-server exited with ${code}`);
@@ -89,8 +90,6 @@ export class StdioCodexGateway extends BaseCodexGateway {
   }
 
   protected stopTransport() {
-    this.lines?.close();
-    this.lines = null;
     this.child?.kill("SIGTERM");
     this.child = null;
   }

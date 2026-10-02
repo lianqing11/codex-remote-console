@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { connect } from "node:net";
-import { codexChildEnvironment, codexDiagnosticFromStderr } from "../server/codex/stdioSupport";
+import { codexAppServerArgs, codexChildEnvironment, codexDiagnosticFromStderr } from "../server/codex/stdioSupport";
 import { shouldProxyHost, startSelectiveProxy } from "../server/selectiveProxy";
 
 const proxyUrl = "http://127.0.0.1:7893";
@@ -111,3 +111,10 @@ testSelectiveConnect().then(() => {
   console.error(error);
   process.exit(1);
 });
+
+assert.deepEqual(codexAppServerArgs({}), ["app-server", "--listen", "stdio://", "-c", "model_auto_compact_token_limit=200000"]);
+assert.deepEqual(codexAppServerArgs({ CODEX_WEB_AUTO_COMPACT_TOKEN_LIMIT: "inherit" }), ["app-server", "--listen", "stdio://"]);
+assert.equal(codexAppServerArgs({ CODEX_WEB_AUTO_COMPACT_TOKEN_LIMIT: "150000" }).at(-1), "model_auto_compact_token_limit=150000");
+for (const invalid of ["0", "-1", "NaN", "12.5", "200000; command", "9007199254740992"]) {
+  assert.throws(() => codexAppServerArgs({ CODEX_WEB_AUTO_COMPACT_TOKEN_LIMIT: invalid }), /AUTO_COMPACT/);
+}

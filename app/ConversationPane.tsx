@@ -93,7 +93,7 @@ type ConversationPaneProps = {
   hasThread: boolean;
   activeTurnId: string | null;
   historyLoading: boolean;
-  showAllHistory: boolean;
+  historyLimit: number;
   onShowAllHistory: () => void;
   diagnostic: GatewayDiagnostic | null;
   onOpenDiff?: (diff: ProjectDiff) => void;
@@ -103,6 +103,8 @@ type ConversationPaneProps = {
   sessionCreating?: boolean;
   onStartProvider?: (provider: ProviderId) => void;
   onProviderDetails?: () => void;
+  directory?: string;
+  onChooseDirectory?: () => void;
 };
 
 export const ConversationPane = memo(function ConversationPane({
@@ -112,7 +114,7 @@ export const ConversationPane = memo(function ConversationPane({
   hasThread,
   activeTurnId,
   historyLoading,
-  showAllHistory,
+  historyLimit,
   onShowAllHistory,
   diagnostic,
   onOpenDiff,
@@ -121,31 +123,39 @@ export const ConversationPane = memo(function ConversationPane({
   selectedProvider,
   sessionCreating = false,
   onStartProvider,
-  onProviderDetails
+  onProviderDetails,
+  directory,
+  onChooseDirectory
 }: ConversationPaneProps) {
   const transcript = useThreadTranscript(threadKey);
   const renderedItems = useDeferredValue(transcript.items);
   const previousRoundsRef = useRef<DisplayTurn[]>([]);
   const previousThreadKeyRef = useRef(threadKey);
+  // Membership changes on new items/turns, not on each streamed text delta.
+  const roundIndex = useMemo(() => groupRounds(
+    transcript.items, transcript.itemOrder, transcript.turnsById, transcript.turnOrder, "", null
+  ), [threadKey, transcript.itemOrder, transcript.turnsById, transcript.turnOrder]);
   const groupedRounds = useMemo(() => {
     if (previousThreadKeyRef.current !== threadKey) {
       previousRoundsRef.current = [];
       previousThreadKeyRef.current = threadKey;
     }
-    const next = groupRounds(
-      renderedItems,
-      transcript.itemOrder,
-      transcript.turnsById,
-      transcript.turnOrder,
-      transcript.pendingPrompt,
-      activeTurnId
-    );
+    const next = roundIndex.slice(0, historyLimit).map((round) => ({
+      ...round, items: round.itemIds.map((id) => renderedItems[id]).filter(Boolean)
+    }));
+    if (shouldShowPendingPrompt(transcript.pendingPrompt, next[0] || null, activeTurnId)) {
+      next.unshift({
+        id: "pending-start", itemIds: ["pending-user-message"], pending: true,
+        status: { type: activeTurnId ? "inProgress" : "sending" },
+        items: [{ id: "pending-user-message", type: "userMessage", content: inputItems(transcript.pendingPrompt) }]
+      });
+    }
     const reused = reuseDisplayTurns(previousRoundsRef.current, next);
     previousRoundsRef.current = reused;
     return reused;
-  }, [activeTurnId, renderedItems, threadKey, transcript.itemOrder, transcript.pendingPrompt, transcript.turnOrder, transcript.turnsById]);
-  const visibleRounds = showAllHistory || groupedRounds.length <= 40 ? groupedRounds : groupedRounds.slice(0, 40);
-  const hiddenRoundCount = groupedRounds.length - visibleRounds.length;
+  }, [activeTurnId, historyLimit, renderedItems, roundIndex, threadKey, transcript.pendingPrompt]);
+  const visibleRounds = groupedRounds;
+  const hiddenRoundCount = Math.max(0, roundIndex.length - historyLimit);
   const activeTurnItemIds = activeTurnId ? new Set(transcript.turnsById[activeTurnId]?.itemIds || []) : null;
 
   return (
@@ -168,11 +178,15 @@ export const ConversationPane = memo(function ConversationPane({
               : hasThread
                 ? "Send the first task below."
                 : wsOnline
-                  ? "Choose a provider, then send a task to create the session."
+                  ? "Send a task below to start. Directory and agent options are in the workspace controls."
                   : `${providerLabel} is reconnecting. You can browse directories while it connects.`}
           </p>
           {!historyLoading && !hasThread && onStartProvider && startProviders.length ? (
             <>
+              <button className="emptyDirectoryButton" type="button" onClick={onChooseDirectory}>
+                <span>Working directory</span>
+                <strong title={directory || undefined}>{directory || "Choose a directory…"}</strong>
+              </button>
               <div className="emptyStateActions providerToggle" role="radiogroup" aria-label="Agent for new sessions">
                 {startProviders.map((option) => {
                   const selected = option.id === (selectedProvider || provider);
@@ -219,7 +233,7 @@ export const ConversationPane = memo(function ConversationPane({
           })}
           {hiddenRoundCount > 0 ? (
             <button className="historyMoreButton" type="button" onClick={onShowAllHistory}>
-              Show {hiddenRoundCount} earlier message{hiddenRoundCount === 1 ? "" : "s"}
+              Show {Math.min(40, hiddenRoundCount)} earlier messages · {hiddenRoundCount} remaining
             </button>
           ) : null}
         </>

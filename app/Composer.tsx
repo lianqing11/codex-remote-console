@@ -13,11 +13,11 @@ import {
 } from "react";
 import {
   ChevronRight,
-  CircleStop,
+  Square,
   FileText,
   LoaderCircle,
   Paperclip,
-  Send,
+  ArrowUp,
   X
 } from "lucide-react";
 import { QueueStatusBar } from "./QueueStatusBar";
@@ -215,18 +215,34 @@ export const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function 
   const [draft, setDraft] = useState(initialDraft);
   const [slashIndex, setSlashIndex] = useState(0);
   const [mentionIndex, setMentionIndex] = useState(0);
+  const [paletteDismissed, setPaletteDismissed] = useState(false);
   const [cursor, setCursor] = useState(initialDraft.length);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const selections = useRef(new Map<string, { start: number; end: number; scroll: number }>());
+  const rememberSelection = (input: HTMLTextAreaElement) => {
+    selections.current.set(threadKey, { start: input.selectionStart, end: input.selectionEnd, scroll: input.scrollTop });
+  };
 
   useEffect(() => {
     setDraft(initialDraft);
     setSlashIndex(0);
     setMentionIndex(0);
-    setCursor(initialDraft.length);
-  }, [initialDraft, threadKey]);
+    const selection = selections.current.get(threadKey);
+    setCursor(selection?.start ?? initialDraft.length);
+    setPaletteDismissed(false);
+    // Same-session parent refreshes must not move the editing caret.
+    const frame = requestAnimationFrame(() => {
+      const input = textareaRef.current;
+      if (!input) return;
+      input.setSelectionRange(selection?.start ?? initialDraft.length, selection?.end ?? initialDraft.length);
+      input.scrollTop = selection?.scroll ?? 0;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [threadKey]);
 
   const updateDraft = (value: string, nextCursor = value.length) => {
+    setPaletteDismissed(false);
     setDraft(value);
     setCursor(nextCursor);
     onDraftChange(value);
@@ -251,12 +267,12 @@ export const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function 
     }
   }), [onDraftChange]);
 
-  const slashOpen = draft.startsWith("/") && !draft.trim().includes(" ");
+  const slashOpen = !paletteDismissed && draft.startsWith("/") && !draft.trim().includes(" ");
   const slashMatches = useMemo(() => (slashOpen ? filterSlashCommands(draft) : []), [draft, slashOpen]);
   const selectedSlashIndex = slashMatches.length ? Math.min(slashIndex, slashMatches.length - 1) : 0;
   const selectedSlashCommand = slashMatches[selectedSlashIndex] || null;
   const atMatch = slashOpen ? null : activeAtQuery(draft, cursor);
-  const atOpen = Boolean(atMatch);
+  const atOpen = !paletteDismissed && Boolean(atMatch);
   const selectedMentionIndex = fileMentions.length ? Math.min(mentionIndex, fileMentions.length - 1) : 0;
   const selectedMention = fileMentions[selectedMentionIndex] || null;
 
@@ -348,13 +364,8 @@ export const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function 
     }
     if (event.key === "Escape") {
       event.preventDefault();
-      if (atOpen && atMatch) {
-        const queryEnd = atMatch.start + 1 + atMatch.query.length;
-        updateDraft(`${draft.slice(0, atMatch.start)}${draft.slice(queryEnd)}`.trimStart(), atMatch.start);
-        return;
-      }
-      if (slashOpen || draft) updateDraft("");
-      else if (activeTurnId) void onInterrupt();
+      event.stopPropagation();
+      setPaletteDismissed(true);
       return;
     }
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
@@ -479,7 +490,9 @@ export const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function 
           onChange={(event) => updateDraft(event.target.value, event.target.selectionStart)}
           onClick={(event) => setCursor(event.currentTarget.selectionStart)}
           onKeyUp={(event) => setCursor(event.currentTarget.selectionStart)}
-          onSelect={(event) => setCursor(event.currentTarget.selectionStart)}
+          onSelect={(event) => { setCursor(event.currentTarget.selectionStart); rememberSelection(event.currentTarget); }}
+          onBlur={(event) => rememberSelection(event.currentTarget)}
+          onScroll={(event) => rememberSelection(event.currentTarget)}
           onPaste={(event) => {
             const files = [...event.clipboardData.files];
             if (!files.length) return;
@@ -499,10 +512,11 @@ export const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function 
             onClick={() => fileInputRef.current?.click()}
           >
             {uploadsInProgress > 0 ? <LoaderCircle aria-hidden="true" className="queueSpinner" size={17} /> : <Paperclip aria-hidden="true" size={17} />}
-            {uploadsInProgress > 0 ? `Uploading ${uploadsInProgress}` : "Agent files"}
+            <span className="composerButtonLabel">{uploadsInProgress > 0 ? `Uploading ${uploadsInProgress}` : "Agent files"}</span>
           </button>
           {activeTurnId && supportsSteer ? (
             <button
+              aria-label="Steer"
               type="button"
               title="Steer the active run now"
               onClick={() => {
@@ -514,15 +528,15 @@ export const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function 
               disabled={!draft.trim()}
             >
               <ChevronRight size={17} />
-              Steer
+              <span className="composerButtonLabel">Steer</span>
             </button>
           ) : null}
         </div>
         <div className="composerPrimaryActions">
           {activeTurnId || executionState.phase === "running" ? (
             <button aria-label="Stop" className="dangerButton" type="button" onClick={() => void Promise.resolve(onInterrupt())}>
-              <CircleStop size={17} />
-              Stop
+              <Square aria-hidden="true" size={18} />
+              <span className="composerButtonLabel">Stop</span>
             </button>
           ) : null}
           <button
@@ -531,8 +545,8 @@ export const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function 
             type="submit"
             disabled={wsState !== "online" || submitting || uploadsInProgress > 0}
           >
-            {submitting ? <LoaderCircle aria-hidden="true" className="queueSpinner" size={17} /> : <Send size={17} />}
-            {submitting ? "Saving…" : "Send"}
+            {submitting ? <LoaderCircle aria-hidden="true" className="queueSpinner" size={17} /> : <ArrowUp aria-hidden="true" size={20} />}
+            <span className="composerButtonLabel">{submitting ? "Saving…" : "Send"}</span>
           </button>
         </div>
       </div>

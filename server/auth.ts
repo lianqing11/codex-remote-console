@@ -24,20 +24,18 @@ function sign(value: string) {
   return createHmac("sha256", secret()).update(value).digest("base64url");
 }
 
-function parseCookies(req: IncomingMessage) {
+function sessionCookieValues(req: IncomingMessage) {
   const header = req.headers.cookie || "";
-  return Object.fromEntries(
-    header
-      .split(";")
-      .map((part) => part.trim())
-      .filter(Boolean)
-      .map((part) => {
-        const index = part.indexOf("=");
-        return index === -1
-          ? [part, ""]
-          : [decodeURIComponent(part.slice(0, index)), decodeURIComponent(part.slice(index + 1))];
-      })
-  );
+  const values: string[] = [];
+  for (const part of header.split(";")) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const index = trimmed.indexOf("=");
+    const key = decodeURIComponent(index === -1 ? trimmed : trimmed.slice(0, index));
+    if (key !== cookieName) continue;
+    values.push(index === -1 ? "" : decodeURIComponent(trimmed.slice(index + 1)));
+  }
+  return values;
 }
 
 function safeEqual(a: string, b: string) {
@@ -68,17 +66,16 @@ function cookieSecure() {
   return !["0", "false", "no", "off"].includes(value.toLowerCase());
 }
 
-export function isAuthenticated(req: IncomingMessage) {
-  if (!authEnabled()) return true;
-
-  const cookie = parseCookies(req)[cookieName];
-  if (!cookie) return false;
-
+function validSession(cookie: string) {
   const [issuedAt, signature] = cookie.split(".");
   if (!issuedAt || !signature || !safeEqual(sign(issuedAt), signature)) return false;
-
   const ageMs = Date.now() - Number(issuedAt);
   return Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= maxAgeSeconds * 1000;
+}
+
+export function isAuthenticated(req: IncomingMessage) {
+  if (!authEnabled()) return true;
+  return sessionCookieValues(req).some(validSession);
 }
 
 export function validateLogin(input: unknown) {
@@ -92,14 +89,20 @@ export function validateLogin(input: unknown) {
   return Boolean(expected) && safeEqual(value, expected);
 }
 
+function expiredRootCookie() {
+  if (cookiePath === "/") return [];
+  const flags = `Path=/; HttpOnly; SameSite=Lax; Max-Age=0${cookieSecure() ? "; Secure" : ""}`;
+  return [`${cookieName}=; ${flags}`];
+}
+
 export function setSessionCookie(res: ServerResponse) {
   const issuedAt = String(Date.now());
   const value = `${issuedAt}.${sign(issuedAt)}`;
   const flags = `Path=${cookiePath}; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${cookieSecure() ? "; Secure" : ""}`;
-  res.setHeader("Set-Cookie", `${cookieName}=${encodeURIComponent(value)}; ${flags}`);
+  res.setHeader("Set-Cookie", [`${cookieName}=${encodeURIComponent(value)}; ${flags}`, ...expiredRootCookie()]);
 }
 
 export function clearSessionCookie(res: ServerResponse) {
   const flags = `Path=${cookiePath}; HttpOnly; SameSite=Lax; Max-Age=0${cookieSecure() ? "; Secure" : ""}`;
-  res.setHeader("Set-Cookie", `${cookieName}=; ${flags}`);
+  res.setHeader("Set-Cookie", [`${cookieName}=; ${flags}`, ...expiredRootCookie()]);
 }

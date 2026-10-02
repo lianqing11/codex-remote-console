@@ -11,6 +11,7 @@ export type QueueStatus =
 import type { ProviderId } from "./sessionRuntime";
 
 export type QueuedPrompt = {
+  timings?: import("../server/queueTypes").QueueTimings;
   id: string;
   provider: ProviderId;
   threadKey: string;
@@ -112,4 +113,22 @@ export function activeQueueTurns(snapshot: QueueSnapshot) {
     if (activeQueueStatuses.has(item.status) && item.runId) turns.set(item.threadKey, item.runId);
   }
   return turns;
+}
+
+/** Terminal queue pushes clear only the run they own, preserving newer native work. */
+export function reconcileQueueActiveTurns(current: Record<string, string>, snapshot: QueueSnapshot) {
+  let next = current;
+  const update = () => { if (next === current) next = { ...current }; };
+  for (const item of snapshot.items) {
+    if (!["completed", "failed", "cancelled", "needs_review"].includes(item.status)) continue;
+    if (!item.runId || next[item.threadKey] !== item.runId) continue;
+    update();
+    delete next[item.threadKey];
+  }
+  for (const [key, run] of activeQueueTurns(snapshot)) {
+    if (next[key] === run) continue;
+    update();
+    next[key] = run;
+  }
+  return next;
 }

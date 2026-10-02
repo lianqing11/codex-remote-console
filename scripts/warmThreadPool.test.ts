@@ -97,6 +97,44 @@ async function main() {
   assert.equal((forced?.params as { forceResume?: boolean } | undefined)?.forceResume, undefined);
   assert.equal((forced?.params as { approvalPolicy?: string }).approvalPolicy, "never");
 
+  const fastPool = new WarmThreadPool(2);
+  const settings = { threadId: "fast", excludeTurns: true, reuseIfUnchanged: true,
+    model: "gpt-test", approvalPolicy: "never", sandbox: "read-only", config: { a: 1, b: 2 } };
+  await requestWithWarmPool(gateway, fastPool, "thread/resume", settings);
+  await requestWithWarmPool(gateway, fastPool, "turn/start", { threadId: "fast", input: [], model: "gpt-test", approvalPolicy: "never", effort: "medium" });
+  calls.length = 0;
+  await requestWithWarmPool(gateway, fastPool, "thread/resume", { ...settings, config: { b: 2, a: 1 } });
+  assert.equal(calls.length, 0, "unchanged settings need no resume, read, or list RPC");
+  for (const change of [{ model: "other" }, { approvalPolicy: "on-request" }, { sandbox: "workspace-write" }, { serviceTier: "priority" }]) {
+    calls.length = 0;
+    await requestWithWarmPool(gateway, fastPool, "thread/resume", { ...settings, ...change });
+    assert.ok(calls.some((call) => call.method === "thread/resume"), "changed settings must be applied");
+    assert.equal((calls.find((call) => call.method === "thread/resume")?.params as any).reuseIfUnchanged, undefined);
+    await requestWithWarmPool(gateway, fastPool, "thread/resume", settings);
+  }
+  await requestWithWarmPool(gateway, fastPool, "turn/start", { threadId: "fast", model: "override", input: [] });
+  calls.length = 0;
+  await requestWithWarmPool(gateway, fastPool, "thread/resume", settings);
+  assert.ok(calls.some((call) => call.method === "thread/resume"), "turn overrides invalidate settings");
+  calls.length = 0;
+  await requestWithWarmPool(gateway, fastPool, "thread/resume", { ...settings, forceResume: true });
+  assert.ok(calls.some((call) => call.method === "thread/resume"), "explicit force always wins");
+  fastPool.clear();
+  calls.length = 0;
+  await requestWithWarmPool(gateway, fastPool, "thread/resume", settings);
+  assert.ok(calls.some((call) => call.method === "thread/resume"), "restart clears settings cache");
+  fastPool.remove("fast");
+  assert.equal(fastPool.matchesResume("fast", settings), false);
+  const failing = { async request() { throw new Error("resume failed"); } };
+  await assert.rejects(requestWithWarmPool(failing, fastPool, "thread/resume", settings), /resume failed/);
+  assert.equal(fastPool.matchesResume("fast", settings), false);
+  await requestWithWarmPool(gateway, fastPool, "thread/resume", settings);
+  await assert.rejects(requestWithWarmPool(failing, fastPool, "thread/resume", { ...settings, model: "changed" }), /resume failed/);
+  assert.equal(fastPool.matchesResume("fast", settings), false, "failed changed resume invalidates old settings too");
+  await requestWithWarmPool(gateway, fastPool, "thread/resume", settings);
+  fastPool.touch("evict-1");
+  fastPool.touch("evict-2");
+  assert.equal(fastPool.matchesResume("fast", settings), false, "eviction clears remembered settings");
   console.log("warmThreadPool.test.ts: ok");
 }
 

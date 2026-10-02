@@ -7,6 +7,32 @@ type GatewayLike = {
 /** MRU-ordered warm thread ids (most recent at the end). */
 export class WarmThreadPool {
   private order: string[] = [];
+  private resumeSettings = new Map<string, string>();
+
+  matchesResume(threadId: string, params: unknown) {
+    return this.has(threadId) && this.resumeSettings.get(threadId) === resumeFingerprint(params);
+  }
+
+  rememberResume(threadId: string, params: unknown) {
+    this.resumeSettings.set(threadId, resumeFingerprint(params));
+  }
+
+  forgetResume(threadId: string) {
+    this.resumeSettings.delete(threadId);
+  }
+
+  invalidateResume(threadId: string, overrides: Record<string, unknown>) {
+    const saved = this.resumeSettings.get(threadId);
+    if (!saved) return;
+    const settings = JSON.parse(saved) as Record<string, unknown>;
+    for (const key of ["model", "serviceTier", "cwd", "approvalPolicy", "approvalsReviewer"]) {
+      if (overrides[key] !== undefined && resumeFingerprint({ value: overrides[key] }) !== resumeFingerprint({ value: settings[key] })) {
+        this.resumeSettings.delete(threadId);
+        return;
+      }
+    }
+    if (overrides.sandboxPolicy !== undefined) this.resumeSettings.delete(threadId);
+  }
 
   constructor(private readonly limit = DEFAULT_WARM_THREAD_LIMIT) {}
 
@@ -20,10 +46,12 @@ export class WarmThreadPool {
 
   clear() {
     this.order = [];
+    this.resumeSettings.clear();
   }
 
   remove(threadId: string) {
     this.order = this.order.filter((id) => id !== threadId);
+    this.resumeSettings.delete(threadId);
   }
 
   /** Mark thread as most-recently used. Returns ids that should be unloaded. */
@@ -35,12 +63,24 @@ export class WarmThreadPool {
     const overflow = this.order.length - this.limit;
     const evict = this.order.slice(0, overflow);
     this.order = this.order.slice(overflow);
+    for (const id of evict) this.resumeSettings.delete(id);
     return evict;
   }
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function resumeFingerprint(params: unknown): string {
+  const normalize = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(normalize);
+    const record = asRecord(value);
+    return record ? Object.fromEntries(Object.keys(record).sort().map((key) => [key, normalize(record[key])])) : value;
+  };
+  const settings = { ...(asRecord(params) || {}) };
+  for (const key of ["threadId", "excludeTurns", "forceResume", "reuseIfUnchanged"]) delete settings[key];
+  return JSON.stringify(normalize(settings));
 }
 
 function threadIdFromParams(params: unknown): string | null {
@@ -127,7 +167,15 @@ export async function requestWithWarmPool(
     // Clients set forceResume when settings must be re-applied (e.g. permissions).
     const forceResume = record?.forceResume === true;
 
-    if (threadId && !forceResume) {
+    // Queue-only fast path: settings must have been successfully applied in this
+    // app-server lifetime. The caller needs no thread history or metadata.
+    if (threadId && !forceResume && record?.reuseIfUnchanged === true && record.excludeTurns === true
+      && pool.matchesResume(threadId, params)) {
+      await settleWarmPool(gateway, pool, threadId);
+      return { thread: { id: threadId } };
+    }
+
+    if (threadId && !forceResume && record?.reuseIfUnchanged !== true) {
       const loaded = pool.has(threadId) ? true : (await listLoadedThreadIds(gateway)).has(threadId);
       if (loaded) {
         const includeTurns = record?.excludeTurns !== true;
@@ -151,15 +199,34 @@ export async function requestWithWarmPool(
   }
 
   const forwardParams =
-    method === "thread/resume" && asRecord(params)?.forceResume !== undefined
+    method === "thread/resume"
       ? (() => {
           const next = { ...(asRecord(params) || {}) };
           delete next.forceResume;
+          delete next.reuseIfUnchanged;
           return next;
         })()
       : params;
 
+  // A failed resume may have partially changed settings upstream.
+  if (method === "thread/resume") {
+    const threadId = threadIdFromParams(params);
+    if (threadId) pool.forgetResume(threadId);
+  }
   const result = await gateway.request(method, forwardParams);
+
+  if (method === "thread/resume") {
+    const threadId = threadIdFromResult(result) || threadIdFromParams(params);
+    if (threadId) pool.rememberResume(threadId, params);
+  } else if (method === "turn/start") {
+    // Turn overrides can change effective thread settings. Invalidate so the
+    // next resume re-applies the full requested settings when they differ.
+    const threadId = threadIdFromParams(params);
+    const record = asRecord(params);
+    if (threadId && record && Object.keys(record).some((key) => !["threadId", "input"].includes(key))) {
+      pool.invalidateResume(threadId, record);
+    }
+  }
 
   if (ATTACH_METHODS.has(method)) {
     const threadId = threadIdFromResult(result) || threadIdFromParams(params);

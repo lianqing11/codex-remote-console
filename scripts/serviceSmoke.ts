@@ -65,6 +65,24 @@ async function main() {
   assert.ok(messages.some((message) => message.type === "gateway:snapshot"));
   assert.ok(messages.some((message) => message.type === "queue:snapshot" && Array.isArray(message.snapshot?.items)));
   assert.ok(messages.some((message) => message.type === "agent:snapshot" && message.providers?.cursor));
+  let heartbeatMs: number | null = null;
+  if (bootstrap.wsHeartbeat === true) {
+    const started = performance.now();
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("WebSocket heartbeat did not reply.")), 5000);
+      const reply = (raw: WebSocket.RawData) => {
+        const message = JSON.parse(raw.toString());
+        if (message.type !== "reply" || message.requestId !== "smoke-heartbeat") return;
+        clearTimeout(timeout);
+        ws.off("message", reply);
+        if (message.ok) resolve();
+        else reject(new Error("WebSocket heartbeat rejected."));
+      };
+      ws.on("message", reply);
+      ws.send(JSON.stringify({ type: "connection:ping", requestId: "smoke-heartbeat" }));
+    });
+    heartbeatMs = Math.round((performance.now() - started) * 100) / 100;
+  }
   ws.close();
 
   console.log(JSON.stringify({
@@ -73,7 +91,9 @@ async function main() {
     cookiePath: expectedCookiePath,
     codex: { version: bootstrap.providers.codex.version, status: bootstrap.providers.codex.status },
     cursor: { version: bootstrap.providers.cursor.version, status: bootstrap.providers.cursor.status },
-    websocket: "agent:snapshot and queue:snapshot received"
+    websocket: "agent:snapshot and queue:snapshot received",
+    wsHeartbeat: bootstrap.wsHeartbeat === true,
+    heartbeatMs
   }, null, 2));
 }
 

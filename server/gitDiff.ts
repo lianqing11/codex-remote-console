@@ -30,6 +30,7 @@ export type GitDiffResult = {
   hasChanges: boolean;
   baseTree?: string | null;
   currentTree?: string | null;
+  truncated?: boolean;
 };
 
 export type GitFilePreview = {

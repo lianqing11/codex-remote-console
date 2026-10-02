@@ -3,14 +3,18 @@ import {
   applyItemsFromTurns,
   discardThreadView,
   getThreadViewState,
+  latestPlanPayloadFor,
   registerTurnItem,
   setItemOrderForThread,
   setItemsForThread,
+  setPendingPromptForThread,
+  setTurnsForThread,
   shouldRestoreQueuePendingPrompt,
   subscribeThreadViewFor,
   threadHasLandedUserPrompt,
   threadViewHasConversationHistory
 } from "../app/threadViewStore";
+import type { ThreadItem } from "../app/threadModel";
 
 const threadKey = "codex:history-after-diff";
 const turnId = "turn-1";
@@ -78,5 +82,57 @@ assert.equal(shouldRestoreQueuePendingPrompt("running", false), false, "a runnin
 assert.equal(shouldRestoreQueuePendingPrompt("waiting_for_input", false), false, "an input wait must not restore pending prompt");
 assert.equal(shouldRestoreQueuePendingPrompt("queued", false), true, "an unstarted queued item can restore pending prompt");
 discardThreadView(replay);
+
+const claudePlan = "claude:plan-result";
+const planText = "1. Implement the change\n2. Verify it";
+const oldPlan = {
+  id: "old-plan", status: "completed", items: [
+    { id: "old-reply", type: "agentMessage", text: "Old plan" }
+  ]
+};
+function loadClaudeTurn(status: unknown, items: ThreadItem[], pending = false) {
+  applyItemsFromTurns(claudePlan, [oldPlan, { id: "latest-plan", status, items }]);
+  if (pending) {
+    setTurnsForThread(claudePlan, (current) => ({
+      ...current, "latest-plan": { ...current["latest-plan"], pending: true }
+    }));
+  }
+}
+loadClaudeTurn("completed", [
+  { id: "progress", type: "agentMessage", phase: "commentary", text: "Inspecting" },
+  { id: "reasoning", type: "reasoning", text: "Comparing" },
+  { id: "reply", type: "agentMessage", text: planText }
+]);
+assert.equal(latestPlanPayloadFor(claudePlan, true), planText, "completed Claude legacy reply is executable");
+assert.equal(latestPlanPayloadFor(claudePlan), "", "legacy replies require Plan-mode opt-in");
+const otherClaudePlan = "claude:other-plan-result";
+applyItemsFromTurns(otherClaudePlan, [{ id: "other-turn", status: "completed", items: [
+  { id: "other-reply", type: "agentMessage", text: "Other session plan" }
+] }]);
+assert.equal(latestPlanPayloadFor(otherClaudePlan, true), "Other session plan");
+assert.equal(latestPlanPayloadFor(claudePlan, true), planText, "switching sessions keeps each plan isolated");
+discardThreadView(claudePlan);
+loadClaudeTurn({ type: "completed" }, [{ id: "reply", type: "agentMessage", text: planText }]);
+assert.equal(latestPlanPayloadFor(claudePlan, true), planText, "rehydrated history restores the plan");
+for (const status of ["inProgress", "running", "failed", "interrupted", "cancelled", "failed-after-restart", undefined]) {
+  loadClaudeTurn(status, [{ id: "reply", type: "agentMessage", phase: "final_answer", text: planText }]);
+  assert.equal(latestPlanPayloadFor(claudePlan, true), "", `turn ${String(status)} must not execute a reply or old plan`);
+}
+loadClaudeTurn("completed", [
+  { id: "progress", type: "agentMessage", phase: "commentary", text: "Inspecting" },
+  { id: "reasoning", type: "reasoning", text: "Comparing" }
+]);
+assert.equal(latestPlanPayloadFor(claudePlan, true), "", "progress-only turns must not reuse history");
+loadClaudeTurn("completed", [{ id: "reply", type: "agentMessage", text: planText }], true);
+assert.equal(latestPlanPayloadFor(claudePlan, true), "", "pending turns are not executable");
+loadClaudeTurn("completed", [{ id: "reply", type: "agentMessage", text: planText }]);
+setItemsForThread(claudePlan, (current) => ({ ...current, "old-diff": { id: "old-diff", type: "diff", text: "old diff" } }));
+registerTurnItem(claudePlan, "old-diff-run", "old-diff");
+loadClaudeTurn("completed", [{ id: "reply", type: "agentMessage", text: planText }]);
+assert.equal(latestPlanPayloadFor(claudePlan, true), planText, "preserved diff-only groups must not hide the latest reply");
+setPendingPromptForThread(claudePlan, "Refine the plan");
+assert.equal(latestPlanPayloadFor(claudePlan, true), "", "a new pending prompt must not execute the old plan");
+discardThreadView(claudePlan);
+discardThreadView(otherClaudePlan);
 
 console.log("thread view store tests passed");

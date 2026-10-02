@@ -25,6 +25,7 @@ type QueueRow = {
   diff_json: string | null;
   created_at: number;
   updated_at: number;
+  timings_json?: string;
 };
 
 type ThreadRow = {
@@ -54,6 +55,7 @@ function parseDiff(value: string | null) {
 
 function rowToItem(row: QueueRow): AgentQueueItem {
   return {
+    timings: row.timings_json ? JSON.parse(row.timings_json) : {},
     id: row.id,
     provider: row.provider as AgentProviderId,
     threadKey: row.thread_key,
@@ -71,6 +73,16 @@ function rowToItem(row: QueueRow): AgentQueueItem {
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
+}
+
+// Every queue change re-sends the whole snapshot, stored diffs included, to every
+// browser. Cap the patch text so one huge turn cannot slow every later update.
+const maxStoredDiffChars = 512 * 1024;
+
+function storedDiffJson(diff: GitDiffResult) {
+  if (diff.diff.length <= maxStoredDiffChars) return JSON.stringify(diff);
+  const cut = diff.diff.lastIndexOf("\n", maxStoredDiffChars);
+  return JSON.stringify({ ...diff, diff: diff.diff.slice(0, cut > 0 ? cut : maxStoredDiffChars), truncated: true });
 }
 
 function rowToThread(row: ThreadRow): AgentQueueThreadState {
@@ -127,6 +139,10 @@ export class AgentQueueStore {
       );
     `);
     migrateQueueProviderConstraint(this.db);
+    const columns = this.db.prepare("PRAGMA table_info(queue_items)").all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "timings_json")) {
+      this.db.exec("ALTER TABLE queue_items ADD COLUMN timings_json TEXT NOT NULL DEFAULT '{}'");
+    }
     chmodSync(databasePath, 0o600);
     this.cleanup();
   }
@@ -147,6 +163,7 @@ export class AgentQueueStore {
   }
 
   enqueue(input: AgentQueueEnqueueInput) {
+    this.cleanup();
     const createdAt = Number.isFinite(input.createdAt) ? input.createdAt : nowSeconds();
     const updatedAt = nowSeconds();
     this.db.prepare(`
@@ -169,6 +186,7 @@ export class AgentQueueStore {
     this.db.prepare(`
       INSERT OR IGNORE INTO queue_threads(thread_key, paused, reason, updated_at) VALUES (?, 0, NULL, ?)
     `).run(input.threadKey, updatedAt);
+    this.recordTiming(input.id, "acceptedAt");
     return this.get(input.id)!;
   }
 
@@ -234,11 +252,20 @@ export class AgentQueueStore {
     return this.threadState(threadKey);
   }
 
+  recordTiming(id: string, stage: keyof import("./queueTypes").QueueTimings) {
+    const item = this.get(id);
+    if (!item || item.timings?.[stage] !== undefined) return false;
+    this.db.prepare("UPDATE queue_items SET timings_json = ? WHERE id = ?")
+      .run(JSON.stringify({ ...item.timings, [stage]: Date.now() }), id);
+    return true;
+  }
+
   markDispatching(id: string) {
     this.db.prepare(`
       UPDATE queue_items SET status = 'dispatching', attempts = attempts + 1, last_error = NULL, updated_at = ?
       WHERE id = ? AND status = 'queued'
     `).run(nowSeconds(), id);
+    this.recordTiming(id, "dispatchAt");
     return this.get(id);
   }
 
@@ -246,6 +273,7 @@ export class AgentQueueStore {
     this.db.prepare(`
       UPDATE queue_items SET status = 'running', run_id = ?, updated_at = ? WHERE id = ? AND status = 'dispatching'
     `).run(runId, nowSeconds(), id);
+    this.recordTiming(id, "startedAt");
     return this.get(id);
   }
 
@@ -256,14 +284,15 @@ export class AgentQueueStore {
 
   setDiff(id: string, diff: GitDiffResult) {
     this.db.prepare("UPDATE queue_items SET diff_json = ?, updated_at = ? WHERE id = ?")
-      .run(JSON.stringify(diff), nowSeconds(), id);
+      .run(storedDiffJson(diff), nowSeconds(), id);
     return this.get(id);
   }
 
   setStatus(id: string, status: AgentQueueStatus, options: { error?: string | null; diff?: GitDiffResult | null } = {}) {
     this.db.prepare(`
       UPDATE queue_items SET status = ?, last_error = ?, diff_json = COALESCE(?, diff_json), updated_at = ? WHERE id = ?
-    `).run(status, options.error ?? null, options.diff ? JSON.stringify(options.diff) : null, nowSeconds(), id);
+    `).run(status, options.error ?? null, options.diff ? storedDiffJson(options.diff) : null, nowSeconds(), id);
+    if (["completed", "failed", "cancelled"].includes(status)) this.recordTiming(id, "completedAt");
     return this.get(id);
   }
 
@@ -271,8 +300,9 @@ export class AgentQueueStore {
     const item = this.get(id);
     if (!item || !["failed", "cancelled", "needs_review"].includes(item.status)) return item;
     this.db.prepare(`
-      UPDATE queue_items SET status = 'queued', run_id = NULL, last_error = NULL, base_tree = NULL, diff_json = NULL, updated_at = ? WHERE id = ?
+      UPDATE queue_items SET status = 'queued', run_id = NULL, last_error = NULL, base_tree = NULL, diff_json = NULL, timings_json = '{}', updated_at = ? WHERE id = ?
     `).run(nowSeconds(), id);
+    this.recordTiming(id, "acceptedAt");
     this.setThreadPaused(item.threadKey, false);
     return this.get(id);
   }
@@ -318,6 +348,7 @@ type QueueSubscriber = (event: { type: "queue:snapshot"; snapshot: AgentQueueSna
 
 export class AgentQueue {
   private readonly subscribers = new Set<QueueSubscriber>();
+  private readonly observedActivity = new Set<string>();
   private readonly activeThreads = new Set<string>();
   private readonly drainingThreads = new Set<string>();
   private readonly scheduledThreads = new Set<string>();
@@ -389,8 +420,23 @@ export class AgentQueue {
     return state;
   }
 
+  markStage(id: string, stage: keyof import("./queueTypes").QueueTimings) {
+    if (this.store.recordTiming(id, stage)) this.emit();
+  }
+
+  handleProviderActivity(provider: AgentProviderId, threadId: string, stage: "firstOutputAt" | "firstToolAt") {
+    const key = `${provider}:${threadId}:${stage}`;
+    if (this.observedActivity.has(key)) return;
+    const item = this.store.activeItem(provider, threadId);
+    if (!item) return;
+    this.observedActivity.add(key);
+    this.markStage(item.id, stage);
+  }
+
   handleProviderStarted(provider: AgentProviderId, threadId: string) {
     this.activeThreads.add(`${provider}:${threadId}`);
+    const item = this.store.activeItem(provider, threadId);
+    if (item) this.markStage(item.id, "startedAt");
   }
 
   async handleProviderTerminal(provider: AgentProviderId, threadId: string, runId: string | null, status: string, message?: string) {
@@ -465,6 +511,8 @@ export class AgentQueue {
 
     this.drainingThreads.add(threadKey);
     try {
+      this.observedActivity.delete(`${threadKey}:firstOutputAt`);
+      this.observedActivity.delete(`${threadKey}:firstToolAt`);
       let item = this.store.markDispatching(queued.id);
       if (!item) return;
       this.emit();

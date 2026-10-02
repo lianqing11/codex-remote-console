@@ -33,6 +33,10 @@ export type JsonRpcResponse = {
 
 export type BrowserMessage =
   | {
+      type: "connection:ping";
+      requestId: string;
+    }
+  | {
       type: "queue:enqueue";
       requestId: string;
       item: AgentQueueEnqueueInput;
@@ -196,6 +200,7 @@ export type AgentNormalizedEvent =
       sessionId: string;
       runId?: string;
       event: "assistant_text";
+      itemId?: string;
       text: string;
       delta?: boolean;
     }
@@ -207,6 +212,7 @@ export type AgentNormalizedEvent =
       event: "tool_started" | "tool_completed" | "tool_failed";
       toolName?: string;
       toolCallId?: string;
+      command?: string;
       summary?: string;
     }
   | {

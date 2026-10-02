@@ -44,6 +44,7 @@ import {
   writeProjectUpload
 } from "./project";
 import { attachSelectiveProxy } from "./selectiveProxy";
+import { snapshotCache } from "./snapshotCache";
 import type { AgentNormalizedEvent, AgentProviderId, AgentProviderSnapshot, BrowserEvent, BrowserMessage, BrowserReply } from "./types";
 import { resolveUploadedInputs, UploadStore } from "./uploads";
 
@@ -143,6 +144,13 @@ function subscribeStreamProvider(
     })();
   });
   const unsubscribeQueue = provider.subscribe((event) => {
+    if (event.event === "status" || event.event === "rate_limits") providerSnapshotCache.invalidate();
+    if (event.event === "assistant_text" && event.text) {
+      agentQueue.handleProviderActivity(id, event.sessionId, "firstOutputAt");
+    }
+    if (event.event === "tool_started") {
+      agentQueue.handleProviderActivity(id, event.sessionId, "firstToolAt");
+    }
     if (event.event !== "status") return;
     if (event.status === "running") {
       agentQueue.handleProviderStarted(id, event.sessionId);
@@ -162,6 +170,7 @@ const unsubscribeCursor = subscribeStreamProvider(cursorProvider, "cursor", curs
 const unsubscribeClaude = subscribeStreamProvider(claudeProvider, "claude", claudeFeishuSource);
 
 gateway.subscribe((event) => {
+  if (event.type === "gateway:state") providerSnapshotCache.invalidate();
   if (event.type === "gateway:state" && (event.status === "disconnected" || event.status === "error")) {
     warmThreadPool.clear();
   }
@@ -179,6 +188,16 @@ gateway.subscribe((event) => {
         : null;
     if (threadId && (method === "thread/closed" || method === "thread/archived" || method === "thread/deleted")) {
       warmThreadPool.remove(threadId);
+    }
+    if (threadId && params && typeof params === "object") {
+      const detail = params as Record<string, any>;
+      if ((method === "item/agentMessage/delta" || method === "item/plan/delta") && detail.delta) {
+        agentQueue.handleProviderActivity("codex", threadId, "firstOutputAt");
+      }
+      if ((method === "item/started" || method === "item/completed") && detail.item) {
+        if (["agentMessage", "plan"].includes(detail.item.type) && detail.item.text) agentQueue.handleProviderActivity("codex", threadId, "firstOutputAt");
+        if (["commandExecution", "mcpToolCall", "dynamicToolCall", "webSearch", "fileChange"].includes(detail.item.type)) agentQueue.handleProviderActivity("codex", threadId, "firstToolAt");
+      }
     }
     if (threadId && method === "turn/started") {
       agentQueue.handleProviderStarted("codex", threadId);
@@ -237,6 +256,7 @@ async function handleProviderRequest(provider: AgentProviderId, method: string, 
 
 async function executeQueueItem(item: AgentQueueItem) {
   if (item.provider === "cursor") {
+    agentQueue.markStage(item.id, "startRequestedAt");
     const result = await cursorProvider.handle("run/start", {
       sessionId: item.threadId,
       prompt: item.text,
@@ -247,17 +267,18 @@ async function executeQueueItem(item: AgentQueueItem) {
     return { runId };
   }
 
+  agentQueue.markStage(item.id, "resumeAt");
   try {
     await handleProviderRequest(item.provider, "thread/resume", {
       threadId: item.threadId,
       excludeTurns: true,
-      forceResume: true,
+      ...(item.provider === "codex" ? { reuseIfUnchanged: true } : { forceResume: true }),
       ...item.threadParams
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // A just-created Codex thread can be resident in app-server before its
-    // rollout is visible on disk. Keep the forced resume for normal settings
+    // rollout is visible on disk. Keep the real resume for changed settings
     // updates, but fall back to the already-loaded thread for this narrow race.
     if (item.provider !== "codex" || !warmThreadPool.has(item.threadId) || !/no rollout found/i.test(message)) throw error;
     await codexRequest("thread/resume", {
@@ -266,6 +287,8 @@ async function executeQueueItem(item: AgentQueueItem) {
       ...item.threadParams
     });
   }
+  agentQueue.markStage(item.id, "resumedAt");
+  agentQueue.markStage(item.id, "startRequestedAt");
   const result = await handleProviderRequest(item.provider, "turn/start", {
     threadId: item.threadId,
     input: [{ type: "text", text: item.text, text_elements: [] }],
@@ -428,13 +451,13 @@ function codexAgentEvent(event: BrowserEvent): BrowserEvent | null {
   return null;
 }
 
-async function providersSnapshot() {
-  return {
-    codex: await codexProviderSnapshot(),
-    cursor: await cursorProvider.getSnapshot(),
-    claude: await claudeProvider.getSnapshot()
-  };
-}
+const providerSnapshotCache = snapshotCache(async () => {
+  const [codex, cursor, claude] = await Promise.all([
+    codexProviderSnapshot(), cursorProvider.getSnapshot(), claudeProvider.getSnapshot()
+  ]);
+  return { codex, cursor, claude };
+});
+function providersSnapshot() { return providerSnapshotCache.get(); }
 
 async function handleApi(req: IncomingMessage, res: ServerResponse) {
   if (!originAllowed(req)) {
@@ -485,6 +508,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse) {
     sendJson(res, 200, {
       authenticated: true,
       authEnabled: authEnabled(),
+      wsHeartbeat: true,
       codexVersion: version,
       defaultCwd: process.cwd(),
       uploads: { maxBytes: uploadStore.maxBytes, maxFiles: 8 },
@@ -639,6 +663,11 @@ async function handleApi(req: IncomingMessage, res: ServerResponse) {
 async function handleBrowserMessage(ws: WebSocket, raw: string) {
   const message = JSON.parse(raw) as BrowserMessage;
 
+  if (message.type === "connection:ping") {
+    send(ws, { type: "reply", requestId: message.requestId, ok: true, result: {} });
+    return;
+  }
+
   if (message.type === "queue:enqueue") {
     const item = agentQueue.enqueue(message.item);
     // enqueue() already broadcasts the committed snapshot to every client.
@@ -752,14 +781,17 @@ app.prepare().then(async () => {
     const unsubscribeClaudeEvents = claudeProvider.subscribe((event) => send(ws, event));
     const unsubscribeQueue = agentQueue.subscribe((event) => send(ws, event));
 
-    send(ws, { type: "gateway:snapshot", snapshot: gateway.getSnapshot() });
+    const initialGatewaySnapshot = gateway.getSnapshot();
+    send(ws, { type: "gateway:snapshot", snapshot: initialGatewaySnapshot });
     send(ws, { type: "queue:snapshot", snapshot: agentQueue.snapshot() });
     providersSnapshot().then((snapshot) => send(ws, { type: "agent:snapshot", providers: snapshot })).catch(() => {});
     gateway
       .ensureStarted()
       .then(async () => {
-        send(ws, { type: "gateway:snapshot", snapshot: gateway.getSnapshot() });
-        send(ws, { type: "agent:snapshot", providers: await providersSnapshot() });
+        if (!initialGatewaySnapshot.initializeInfo) {
+          send(ws, { type: "gateway:snapshot", snapshot: gateway.getSnapshot() });
+          send(ws, { type: "agent:snapshot", providers: await providersSnapshot() });
+        }
       })
       .catch((error) =>
         send(ws, {

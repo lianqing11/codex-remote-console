@@ -97,7 +97,7 @@ assert.ok(pageSource.includes("ClaudeUsagePill"));
 assert.ok(pageSource.includes("CursorUsagePill"));
 assert.ok(pageSource.includes("account/usage/read"));
 assert.ok(pageSource.includes("selectedThreadIdRef.current === tid"));
-assert.ok(pageSource.includes("if (wsRef.current?.readyState === WebSocket.OPEN) return;"));
+assert.match(pageSource, /if \(wsRef\.current\?\.readyState === WebSocket\.OPEN(?: \|\| wsRef\.current\?\.readyState === WebSocket\.CONNECTING)?\) return;/);
 assert.equal(pageSource.includes("if (wsRef.current?.readyState === WebSocket.OPEN) refreshLiveState(false)"), false);
 
 console.log("provider UI static checks passed");

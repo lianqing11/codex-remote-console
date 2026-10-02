@@ -123,3 +123,64 @@ Issues and PRs welcome—small changes, tests where behavior shifts, avoid depen
 
 **GitHub About (suggested):** Self-hosted browser console for Codex and Cursor Agent on a remote machine.
 **Topics:** `codex`, `codex-cli`, `cursor-agent`, `remote-development`, `webui`, `ai-coding`, `self-hosted`, `nextjs`, `websocket`.
+
+### Codex latency and long sessions
+
+Queued Codex turns reuse resident threads when the complete resume settings match the last successful resume. Model, service tier, permission, sandbox, or other resume-setting changes still trigger a real resume. Explicit permission refresh always forces a resume. The cache is cleared on gateway disconnect and thread eviction; it never treats a failed resume as applied.
+
+The Web-managed stdio app-server defaults to `model_auto_compact_token_limit=200000`, independently of the terminal's config. Set `CODEX_WEB_AUTO_COMPACT_TOKEN_LIMIT` to an integer of at least 10000 to tune this threshold, or `inherit` to use the CLI config. Restart the Web service while its queue is idle to apply it. External WebSocket gateways retain their own configuration. Compaction summarizes older context and can lose detail; it can also add a one-time wait to a large existing session. For independent tasks, a new session avoids carrying unrelated history. This threshold is a latency tradeoff, not a measured optimal value or a guarantee of upstream response time.
+
+### Session responsiveness and recovery
+
+- Streamed Markdown refreshes at a bounded interval, including continuous output.
+- The first nonempty text fragment renders immediately; later fragments coalesce
+  at approximately 80 ms, and completion displays the full response immediately.
+- Provider session lists update independently while the selected session restores.
+  Queue state uses the server push, with one fallback query after a one-second wait.
+- Provider snapshots share a five-second cache and concurrent status checks.
+  Backends advertising `wsHeartbeat` support `connection:ping` using the existing
+  reply format. Visible, idle tabs check every 30 seconds; focus and network recovery
+  check immediately, with a five-second timeout before reconnecting.
+- Escape dismisses input suggestions without clearing the draft or stopping a run.
+- Text drafts are scoped to each provider/session (and each new-session directory)
+  in browser `sessionStorage`. Reloading the tab restores them. Uploaded attachments
+  still follow the existing upload lifecycle and are not restored as text drafts.
+- Session links carry provider, session and workspace tab; browser Back/Forward and
+  reload restore that location. Session rows support opening in a new tab.
+- New Codex settings default to `medium`; existing saved effort choices are retained.
+- History expands in batches of 40 rounds. Runtime offers conversation compaction
+  and an editable handoff containing recent message excerpts, without auto-sending it.
+- Queue-backed requests record server-side admission, dispatch, resume, start, first
+  text output/tool and terminal timestamps. Timing is retained with the queue item;
+  retry starts a fresh attempt. Older and direct/non-queue runs may lack this data.
+  Cumulative token consumption is displayed separately from the last request input.
+
+`npm run test:session-experience` checks draft storage, URL encoding and token usage
+semantics. `python scripts/playwrightSessionExperience.py` uses deterministic mock
+provider events against the real UI to check continuous streaming, draft recovery,
+history pagination, navigation and responsive geometry without starting agent tasks.
+Set `CODING_AGENT_CONSOLE_TEST_URL` and the normal authentication environment. The
+optional `CODING_AGENT_CONSOLE_FRONTEND_URL` tests a candidate frontend before release.
+
+### Appearance and phone layout
+
+The Appearance control offers Light, Dark, System, and Green, Blue, Purple or Amber
+accents. Validated preferences are stored under `coding-agent-console.appearance.v1`
+in this browser and applied before the first paint. Storage denial falls back to
+Light/Green without blocking editing or sending.
+
+Phones default to Minimal with Sessions, Chat and Tools navigation. Tools contains
+files, changes, session settings, working directory and Appearance; Appearance can
+switch back to Detailed. Desktop retains the full workspace. Session changes on a
+phone leave keyboard opening to an explicit input tap. Drafts, attachments and
+editing selections remain associated with their session while navigating; theme
+and layout changes preserve them. Native iPhone keyboard behavior still requires
+device verification.
+
+`npm run test:appearance` checks preference parsing and prepaint initialization;
+`npm run test:snapshots` checks cache coalescing, expiry and invalidation. Run
+`npm run test:playwright-appearance` against an isolated frontend to verify themes,
+phone layouts, independent lists, pushed queues, draft recovery, streaming paint,
+reconnection and expired authentication with mocked APIs and provider frames.
+Its screenshots and JSON report use the ignored `.codex_web/ui-verification/`
+directory. Browser tests require Playwright and an installed Chromium browser.

@@ -17,6 +17,8 @@ import {
 import type { FleetSections, FleetSessionView, FleetStatus } from "./fleetModel";
 import { AGENT_PROVIDER_LABELS, fastModeLabel, isFastServiceTier } from "./sessionRuntime";
 import { epochSeconds } from "./threadModel";
+import { sessionHref } from "./sessionNavigation";
+import { appPath } from "./apiClient";
 
 type AgentFleetProps = {
   sections: FleetSections;
@@ -121,11 +123,15 @@ export const FleetSessionRow = memo(function FleetSessionRow({
       data-session-key={thread.key}
       data-session-mode={thread.mode || "default"}
     >
-      <button
+      <a
         aria-current={selected ? "page" : undefined}
         className="fleetSessionMain"
-        type="button"
-        onClick={() => onSelect(thread.key)}
+        href={sessionHref({ provider: thread.provider, session: thread.key.slice(thread.provider.length + 1), view: "chat" }, appPath("/"))}
+        onClick={(event) => {
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+          event.preventDefault();
+          onSelect(thread.key);
+        }}
       >
         <span className="fleetSessionCopy">
           <span className="fleetSessionTitleLine">
@@ -157,7 +163,7 @@ export const FleetSessionRow = memo(function FleetSessionRow({
                 {thread.model}
               </span>
             ) : null}
-            {compact ? null : thread.reasoningEffort ? (
+            {thread.reasoningEffort ? (
               <span
                 className="fleetSessionRuntime fleetSessionThinking"
                 data-thinking-effort={thread.reasoningEffort}
@@ -177,7 +183,7 @@ export const FleetSessionRow = memo(function FleetSessionRow({
             ) : null}
           </small>
         </span>
-      </button>
+      </a>
       <details
         className="fleetRowMenu"
         open={menuOpen}

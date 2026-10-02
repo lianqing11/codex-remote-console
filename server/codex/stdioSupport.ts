@@ -15,6 +15,16 @@ const proxyVariables = [
 
 const defaultNoProxy = "localhost,127.0.0.1,::1";
 
+export function codexAppServerArgs(source: Record<string, string | undefined>) {
+  const value = source.CODEX_WEB_AUTO_COMPACT_TOKEN_LIMIT?.trim() || "200000";
+  const args = ["app-server", "--listen", "stdio://"];
+  if (value === "inherit") return args;
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < 10000) {
+    throw new Error("CODEX_WEB_AUTO_COMPACT_TOKEN_LIMIT must be an integer >= 10000, or inherit.");
+  }
+  return [...args, "-c", `model_auto_compact_token_limit=${Number(value)}`];
+}
+
 export function childProcessEnv(source: NodeJS.ProcessEnv = process.env) {
   const environment = { ...source };
   const injectUrl = source.CODEX_WEB_INJECT_PROXY_URL?.trim();

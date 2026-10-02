@@ -14,6 +14,7 @@ export type RuntimePanelData = {
   reasoning?: string;
   serviceTier?: string;
   usage?: string;
+  quota?: string;
   approval?: string;
   sandbox?: string;
   warning?: string;
@@ -27,7 +28,10 @@ export const RuntimePanel = memo(function RuntimePanel({
   onOpenModel,
   onOpenPermissions,
   onOpenMcp,
-  onOpenStatus
+  onOpenStatus,
+  onCompact,
+  onHandoff,
+  contextBusy = false
 }: {
   data: RuntimePanelData;
   onOpenProvider: () => void;
@@ -35,6 +39,9 @@ export const RuntimePanel = memo(function RuntimePanel({
   onOpenPermissions: () => void;
   onOpenMcp: () => void;
   onOpenStatus: () => void;
+  onCompact?: () => void;
+  onHandoff?: () => void;
+  contextBusy?: boolean;
 }) {
   const facts = [
     { icon: <Bot aria-hidden="true" size={15} />, label: "Provider", value: `${data.provider} · ${data.version}` },
@@ -43,6 +50,7 @@ export const RuntimePanel = memo(function RuntimePanel({
     { icon: <SlidersHorizontal aria-hidden="true" size={15} />, label: "Mode", value: data.mode },
     ...(data.reasoning ? [{ icon: <Gauge aria-hidden="true" size={15} />, label: "Reasoning", value: data.reasoning }] : []),
     ...(data.serviceTier ? [{ icon: <Gauge aria-hidden="true" size={15} />, label: "Service tier", value: data.serviceTier }] : []),
+    ...(data.quota ? [{ icon: <BarChart3 aria-hidden="true" size={15} />, label: "Quota", value: data.quota }] : []),
     ...(data.usage ? [{ icon: <BarChart3 aria-hidden="true" size={15} />, label: "Usage", value: data.usage }] : []),
     ...(data.approval ? [{ icon: <ShieldCheck aria-hidden="true" size={15} />, label: "Approval", value: data.approval }] : []),
     ...(data.sandbox ? [{ icon: <Box aria-hidden="true" size={15} />, label: "Sandbox", value: data.sandbox }] : [])
@@ -72,6 +80,14 @@ export const RuntimePanel = memo(function RuntimePanel({
         {data.supportsMcp ? <button type="button" onClick={onOpenMcp}><ServerCog aria-hidden="true" size={15} />MCP servers</button> : null}
         <button type="button" onClick={onOpenStatus}><SlidersHorizontal aria-hidden="true" size={15} />Full status</button>
       </div>
+      {onHandoff ? (
+        <section className="contextActions" aria-label="Conversation context">
+          <h3>Conversation context</h3>
+          <p>Keep long tasks focused. Review a handoff draft before sending it in a new session.</p>
+          {onCompact ? <button type="button" disabled={contextBusy} onClick={onCompact}>Compact this conversation</button> : null}
+          <button type="button" disabled={contextBusy} onClick={onHandoff}>Continue in a new session</button>
+        </section>
+      ) : null}
     </section>
   );
 });

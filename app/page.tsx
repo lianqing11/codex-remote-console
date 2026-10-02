@@ -22,6 +22,9 @@ import {
   LoaderCircle,
   LogOut,
   MessageSquare,
+  MoreHorizontal,
+  Palette,
+  Wrench,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
@@ -177,15 +180,24 @@ import {
   threadViewHasConversationHistory,
   useLatestPlanPayload
 } from "./threadViewStore";
+import { RunProgress } from "./RunProgress";
+import { readSessionDraft, saveSessionDraft } from "./sessionDrafts";
+import { useSessionNavigation } from "./sessionNavigation";
+import { formatTokenUsage, tokenUsageSummary } from "./tokenUsage";
 import { applyTranscriptNotification, terminalKindForTurn } from "./threadNotifications";
 import {
   activeQueueTurns,
+  reconcileQueueActiveTurns,
   queueSummariesByThread,
   queueThreadSummary,
   type QueuedPrompt,
   type QueueSnapshot
 } from "./queueModel";
-import { RuntimePanel } from "./RuntimePanel";
+import { useAppearance } from "./useAppearance";
+import { browserStorage } from "./browserStorage";
+const RuntimePanel = dynamic(() => import("./RuntimePanel").then(module => module.RuntimePanel));
+const AppearanceDialog = dynamic(() => import("./ConsoleSettings").then(module => module.AppearanceDialog));
+const ToolsDialog = dynamic(() => import("./ConsoleSettings").then(module => module.ToolsDialog));
 import { deleteServerFile, uploadPreviewUrl, uploadServerFile } from "./uploads";
 
 type JsonRpcId = string | number;
@@ -316,6 +328,7 @@ type ShortcutHint = {
 type Bootstrap = {
   authenticated: boolean;
   authEnabled: boolean;
+  wsHeartbeat?: boolean;
   codexVersion: string;
   uploads?: { maxBytes: number; maxFiles: number };
   providers?: Partial<Record<ProviderId, ProviderStatus>>;
@@ -453,8 +466,8 @@ const ProjectFileWorkspace = dynamic(() => import("./ProjectFileWorkspace"), {
   loading: () => <div className="workspaceLoading">Loading project reader…</div>
 });
 
-function fetchBootstrap(): Promise<Bootstrap> {
-  return fetch(appPath("/api/bootstrap")).then(async (response) => {
+function fetchBootstrap(signal?: AbortSignal): Promise<Bootstrap> {
+  return fetch(appPath("/api/bootstrap"), { signal }).then(async (response) => {
     const text = await response.text();
     let data: unknown;
     try {
@@ -969,46 +982,9 @@ function compactTokens(n: number) {
   return n.toString();
 }
 
-function formatTokenUsage(value: unknown) {
-  if (!value || typeof value !== "object") return "";
-  const params = value as Record<string, any>;
-  const wrapper = params.tokenUsage ?? params.usage ?? params;
-  const breakdown = wrapper?.total ?? wrapper?.last ?? wrapper;
-  if (!breakdown || typeof breakdown !== "object") return "";
-  const input = breakdown.inputTokens ?? breakdown.input_tokens ?? breakdown.promptTokens ?? breakdown.prompt_tokens;
-  const output = breakdown.outputTokens ?? breakdown.output_tokens ?? breakdown.completionTokens ?? breakdown.completion_tokens;
-  const total = breakdown.totalTokens ?? breakdown.total_tokens ?? breakdown.total;
-  const cached = breakdown.cachedInputTokens ?? breakdown.cached_input_tokens;
-  const reasoning = breakdown.reasoningOutputTokens ?? breakdown.reasoning_output_tokens;
-  const window = wrapper?.modelContextWindow ?? params.modelContextWindow;
-  const parts = [
-    typeof input === "number" ? `in ${compactTokens(input)}${typeof cached === "number" && cached > 0 ? ` (${compactTokens(cached)} cached)` : ""}` : "",
-    typeof output === "number" ? `out ${compactTokens(output)}${typeof reasoning === "number" && reasoning > 0 ? ` (${compactTokens(reasoning)} think)` : ""}` : "",
-    typeof total === "number"
-      ? `total ${compactTokens(total)}${typeof window === "number" && window > 0 ? ` / ${compactTokens(window)} (${Math.round((total / window) * 100)}%)` : ""}`
-      : ""
-  ].filter(Boolean);
-  return parts.join(" · ");
-}
 
 function sameStatusType(left: unknown, right: unknown) {
   return statusLabel(left) === statusLabel(right);
-}
-
-function SessionModelPill({ model, onClick }: { model: string; onClick: () => void }) {
-  const label = model.trim() || "auto";
-  return (
-    <button
-      aria-label={`Model ${label}`}
-      className="sessionModelPill"
-      title={label}
-      type="button"
-      onClick={onClick}
-    >
-      <span>{label}</span>
-      <ChevronDown aria-hidden="true" size={14} />
-    </button>
-  );
 }
 
 function UsagePill({
@@ -1302,6 +1278,11 @@ function ShortcutHints({ items }: { items: ShortcutHint[] }) {
 }
 
 export default function Home() {
+  const { appearance, updateAppearance } = useAppearance();
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [connectionMetrics, setConnectionMetrics] = useState<Record<string, number>>({});
+  const [usageUpdatedAt, setUsageUpdatedAt] = useState<number | null>(null);
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
   const [password, setPassword] = useState("");
@@ -1325,6 +1306,7 @@ export default function Home() {
   const [queueAction, setQueueAction] = useState<string | null>(null);
   const [composerSubmitting, setComposerSubmitting] = useState(false);
   const [planSubmitting, setPlanSubmitting] = useState(false);
+  const planSubmittingRef = useRef(false);
   const [sessionCreating, setSessionCreating] = useState(false);
   const [tokenUsageByThread, setTokenUsageByThread] = useState<Record<string, unknown>>({});
   const [codexRateLimit, setCodexRateLimit] = useState<StandardCodexRateLimit | null>(null);
@@ -1336,7 +1318,7 @@ export default function Home() {
   const [noticeTone, setNoticeTone] = useState<NoticeTone>("info");
   const [gatewayDiagnostic, setGatewayDiagnostic] = useState<GatewayDiagnostic | null>(null);
   const [historyLoadingThreadId, setHistoryLoadingThreadId] = useState<string | null>(null);
-  const [showAllHistory, setShowAllHistory] = useState(false);
+  const [historyLimit, setHistoryLimit] = useState(40);
   const [completionPopup, setCompletionPopup] = useState<CompletionPopup | null>(null);
   const [recentDirs, setRecentDirs] = useState<string[]>([]);
   const [pinnedDirs, setPinnedDirs] = useState<string[]>([]);
@@ -1384,6 +1366,8 @@ export default function Home() {
   const wsRef = useRef<WebSocket | null>(null);
   const bootstrapRef = useRef<Bootstrap | null>(null);
   const selectedThreadIdRef = useRef<string | null>(null);
+  const selectionRevision = useRef(0);
+  const firstOutputTurn = useRef<string | null>(null);
   const knownThreadIdsRef = useRef<Set<string>>(new Set());
   /** Thread keys currently resident in Codex app-server memory (warm / skip cold resume). */
   const warmThreadIdsRef = useRef<Set<string>>(new Set());
@@ -1408,6 +1392,26 @@ export default function Home() {
   const sessionCreatingRef = useRef(false);
   const sessionManagerRequestSeq = useRef(0);
   const sessionRefreshRequestSeq = useRef(0);
+  const threadListRequestSeq = useRef(0);
+  const threadListInFlight = useRef<Promise<void> | null>(null);
+  const sessionRefreshInFlight = useRef<Promise<void> | null>(null);
+  const queueSnapshotSeen = useRef(false);
+  const connectionGeneration = useRef(0);
+  const snapshotWaiters = useRef<Set<() => void>>(new Set());
+  const recordConnectionMetric = useCallback((stage: string, start?: number) => {
+    const now = performance.now();
+    performance.clearMarks(`console:${stage}`);
+    performance.mark(`console:${stage}`);
+    setConnectionMetrics(current => ({ ...current, [stage]: Math.round(start === undefined ? now : now - start) }));
+  }, []);
+  useEffect(() => {
+    const visible = (event: Event) => {
+      const { at, received } = (event as CustomEvent<{ at: number; received?: number }>).detail;
+      setConnectionMetrics(current => ({ ...current, "first text displayed": Math.round(at), ...(received === undefined ? {} : { "text receive to display": Math.round(at - received) }) }));
+    };
+    window.addEventListener("console:first-text-visible", visible);
+    return () => window.removeEventListener("console:first-text-visible", visible);
+  }, []);
   const turnDiffBaselines = useRef(new Map<string, TurnDiffBaseline>());
   const completedTurnNotifications = useRef(new Set<string>());
   const completionPopupTimer = useRef<number | null>(null);
@@ -1432,7 +1436,32 @@ export default function Home() {
   const supportsServiceTier = providerCapability(currentProviderStatus, "serviceTier");
   const isCursorProvider = selectedProvider === "cursor";
   const currentThreadKey = threadKey(selectedThread);
+  const composerDraftKey = currentThreadKey || `${selectedProvider}:draft:${cwd}`;
+  const composerDraftKeyRef = useRef(composerDraftKey);
+  composerDraftKeyRef.current = composerDraftKey;
+  if (!(composerDraftKey in draftsRef.current) && typeof window !== "undefined") {
+    draftsRef.current[composerDraftKey] = readSessionDraft(composerDraftKey);
+  }
   const tokenUsage = tokenUsageByThread[currentThreadKey] ?? null;
+  useSessionNavigation(wsState === "online", {
+    provider: selectedProvider, session: selectedThread ? nativeThreadId(selectedThread) : "", view: workspaceView
+  }, async (location) => {
+    try {
+      if (location.session) {
+        const existing = threads.find((thread) => providerOf(thread) === location.provider && nativeThreadId(thread) === location.session);
+        await resumeThread(existing || normalizeThread({
+          id: location.session, provider: location.provider, cwd: "", name: null,
+          preview: "Opening session…", updatedAt: 0, status: { type: "idle" }, turns: []
+        }));
+      } else {
+        selectProviderPreference(location.provider);
+        beginDraftSession();
+      }
+      setWorkspaceView(location.view);
+    } catch (error) {
+      setNotice(`Could not restore this session: ${error instanceof Error ? error.message : String(error)}`, "error");
+    }
+  });
   const setPendingPrompt = useCallback((value: string) => {
     setPendingPromptForThread(selectedThreadIdRef.current || "", value);
   }, []);
@@ -1457,6 +1486,7 @@ export default function Home() {
       const next = { ...draftsRef.current };
       delete next[threadId];
       draftsRef.current = next;
+      saveSessionDraft(threadId, "");
     }
     setTokenUsageByThread((current) => {
       if (!(threadId in current)) return current;
@@ -1558,7 +1588,7 @@ export default function Home() {
   const activeRequest = pendingRequests[0] || null;
   const activeRequestProvider = ((activeRequest?.params as { provider?: ProviderId } | undefined)?.provider || "codex") as ProviderId;
   const orderedThreads = useMemo(
-    () => threads.filter((thread) => !thread.empty || threadKey(thread) === currentThreadKey),
+    () => threads.filter((thread) => !thread.empty || threadKey(thread) === currentThreadKey).sort(compareThreadsByRecency),
     [currentThreadKey, threads]
   );
   const selectedThreadIndex = useMemo(
@@ -1686,7 +1716,7 @@ export default function Home() {
       })),
     [startProviderAvailability]
   );
-  const onShowAllHistory = useCallback(() => setShowAllHistory(true), []);
+  const onShowAllHistory = useCallback(() => setHistoryLimit((limit) => limit + 40), []);
   const onStartProvider = useCallback((provider: ProviderId) => {
     startProviderActionRef.current(provider);
   }, []);
@@ -1865,9 +1895,11 @@ export default function Home() {
     const threadId = expectedThreadId || selectedThreadIdRef.current;
     if (!threadId) return;
     const provider = providerFromThreadKey(threadId);
+    const revision = selectionRevision.current;
+    const connection = connectionGeneration.current;
 
     const response = await agent(provider, "thread/read", { threadId: nativeThreadId(threadId), includeTurns: true, provider });
-    if (selectedThreadIdRef.current !== threadId) return;
+    if (selectedThreadIdRef.current !== threadId || revision !== selectionRevision.current || connection !== connectionGeneration.current) return;
     const refreshed = normalizeThread({ ...(response.thread as Thread), provider });
     if (!refreshed?.id) return;
 
@@ -1879,47 +1911,43 @@ export default function Home() {
     applyItemsFromTurns(threadId, refreshed.turns || []);
   }, [agent, applyItemsFromTurns, reconcileModeOverrides, updateActiveTurn]);
 
-  const loadThreads = useCallback(async () => {
-    const availableProviders = providerOrder.filter((provider) => providerAvailable(providerStatus(bootstrapRef.current, provider)));
-    const targets = availableProviders.length ? availableProviders : ["codex" as ProviderId];
-    const results = await Promise.all(
-      targets.map((provider) =>
-        agent(provider, "thread/list", { limit: 50, sortDirection: "desc", provider })
-          .then((response) => normalizeThreads(response.data || []))
-          .catch((error) => {
-            if (provider === "codex") throw error;
-            return [] as Thread[];
-          })
-      )
-    );
-    const nextThreads = mergeThreadsById([], results.flat()).filter(
-      (thread) => !dismissedThreadIdsRef.current.has(threadKey(thread))
-    );
-    const snapshots = nextThreads.map((thread) => ({
-      key: threadKey(thread),
-      statusLabel: statusLabel(thread.status)
-    }));
-    const liveQueue = queueSnapshotRef.current;
-    const keepKeys = activeQueueTurns(liveQueue).keys();
-    setActiveTurnIdsByThread((current) => {
-      const reconciled = reconcileActiveTurns(current, snapshots, keepKeys);
-      let next = reconciled;
-      for (const [threadKeyValue, runId] of activeQueueTurns(liveQueue)) {
-        if (next[threadKeyValue] === runId) continue;
-        if (next === reconciled) next = { ...reconciled };
-        next[threadKeyValue] = runId;
-      }
-      return next;
-    });
-    setSelectedThread((current) => {
-      if (!current) return current;
-      const latest = nextThreads.find((thread) => threadKey(thread) === threadKey(current));
-      if (!latest) return current;
-      return { ...current, ...latest, turns: current.turns?.length ? current.turns : latest.turns };
-    });
-    reconcileModeOverrides(nextThreads);
-    setThreads(nextThreads);
-  }, [agent, reconcileModeOverrides]);
+  const loadThreads = useCallback((): Promise<void> => {
+    if (threadListInFlight.current) return threadListInFlight.current;
+    const revision = ++threadListRequestSeq.current;
+    const connection = connectionGeneration.current;
+    const available = providerOrder.filter(provider => providerAvailable(providerStatus(bootstrapRef.current, provider)));
+    const targets = available.length ? available : ["codex" as ProviderId];
+    const promise = Promise.allSettled(targets.map(async provider => {
+      const response = await agent(provider, "thread/list", { limit: 50, sortDirection: "desc", provider });
+      if (revision !== threadListRequestSeq.current || connection !== connectionGeneration.current) return;
+      const next = normalizeThreads(response.data || []).filter(thread => !dismissedThreadIdsRef.current.has(threadKey(thread)));
+      const snapshots = next.map(thread => ({ key: threadKey(thread), statusLabel: statusLabel(thread.status) }));
+      // Only reconcile the provider which replied; slow providers keep their state.
+      setActiveTurnIdsByThread(current => {
+        const own = Object.fromEntries(Object.entries(current).filter(([key]) => providerFromThreadKey(key) === provider));
+        const reconciled = reconcileActiveTurns(own, snapshots, activeQueueTurns(queueSnapshotRef.current).keys());
+        const result = { ...current };
+        for (const key of Object.keys(own)) delete result[key];
+        Object.assign(result, reconciled);
+        for (const [key, run] of activeQueueTurns(queueSnapshotRef.current)) result[key] = run;
+        return result;
+      });
+      setSelectedThread(current => {
+        if (!current || providerOf(current) !== provider) return current;
+        const latest = next.find(thread => threadKey(thread) === threadKey(current));
+        return latest ? { ...current, ...latest, turns: current.turns?.length ? current.turns : latest.turns } : current;
+      });
+      reconcileModeOverrides(next);
+      setThreads(current => mergeThreadsById(current.filter(thread => providerOf(thread) !== provider), next));
+      recordConnectionMetric(`${provider} sessions`);
+    })).then(results => {
+      if (revision !== threadListRequestSeq.current || connection !== connectionGeneration.current) return;
+      const failures = results.flatMap((result, index) => result.status === "rejected" ? [providerName(targets[index])] : []);
+      if (failures.length) setNotice(`Could not refresh ${failures.join(", ")} sessions. Other sessions remain available.`, "warning");
+    }).finally(() => { if (threadListInFlight.current === promise) threadListInFlight.current = null; });
+    threadListInFlight.current = promise;
+    return promise;
+  }, [agent, reconcileModeOverrides, recordConnectionMetric]);
 
   const loadSessionManagerPage = useCallback(
     async (cursor: string | null = null) => {
@@ -1983,7 +2011,7 @@ export default function Home() {
     setRuntimeSettingsByProvider((current) => {
       const old = current[provider] || providerRuntimeDefaults(provider);
       const updated = { ...old, ...(typeof next === "function" ? next(old) : next), provider };
-      window.localStorage.setItem(storageKey(runtimeStorageKey(provider)), JSON.stringify(updated));
+      browserStorage.setItem(storageKey(runtimeStorageKey(provider)), JSON.stringify(updated));
       return { ...current, [provider]: updated };
     });
   }
@@ -2029,7 +2057,7 @@ export default function Home() {
 
   function selectProviderPreference(provider: ProviderId) {
     setSelectedProvider(provider);
-    window.localStorage.setItem(storageKey("provider"), provider);
+    browserStorage.setItem(storageKey("provider"), provider);
   }
 
   const collaborationMode = useCallback((modelOverride?: string, turnMode: ModeKind = mode) => {
@@ -2099,33 +2127,42 @@ export default function Home() {
         reconcileQueuePendingPrompt(threadKeyValue, pending || null);
       }
 
-      const queueTurns = activeQueueTurns(snapshot);
-      setActiveTurnIdsByThread((current) => {
-        let next = current;
-        for (const [threadKeyValue, runId] of queueTurns) {
-          if (current[threadKeyValue] === runId) continue;
-          if (next === current) next = { ...current };
-          next[threadKeyValue] = runId;
-        }
-        return next;
-      });
+      setActiveTurnIdsByThread(current => reconcileQueueActiveTurns(current, snapshot));
     },
     [registerTurnItem, setItemOrderForThread, setItemsForThread]
   );
 
-  const refreshSessionState = useCallback(async (_reason: "connect" | "reconnect" | "manual" | "recover" = "manual") => {
-    const requestId = ++sessionRefreshRequestSeq.current;
+  const refreshSessionState = useCallback((reason: "connect" | "reconnect" | "manual" | "recover" = "manual"): Promise<void> => {
+    if (sessionRefreshInFlight.current) return sessionRefreshInFlight.current;
+    const revision = ++sessionRefreshRequestSeq.current;
+    const connection = connectionGeneration.current;
     const selectedKey = selectedThreadIdRef.current;
-    const [, snapshot] = await Promise.all([
-      loadThreads(),
-      call({ type: "queue:list" }) as Promise<QueueSnapshot>
-    ]);
-    if (requestId !== sessionRefreshRequestSeq.current) return;
-    if (snapshot) applyQueueSnapshot(snapshot);
-    if (selectedKey && selectedThreadIdRef.current === selectedKey) {
-      await refreshSelectedThread(selectedKey);
-    }
-  }, [applyQueueSnapshot, call, loadThreads, refreshSelectedThread]);
+    const selectedStarted = performance.now();
+    const queueRefresh = (async () => {
+      if (reason === "connect" || reason === "reconnect") {
+        if (!queueSnapshotSeen.current) await new Promise<void>(resolve => {
+          const finish = () => { window.clearTimeout(timer); snapshotWaiters.current.delete(finish); resolve(); };
+          const timer = window.setTimeout(finish, 1000);
+          snapshotWaiters.current.add(finish);
+        });
+        if (queueSnapshotSeen.current) return;
+      }
+      if (connection !== connectionGeneration.current) return;
+      const snapshot = await call({ type: "queue:list" }) as QueueSnapshot;
+      if (revision === sessionRefreshRequestSeq.current && connection === connectionGeneration.current && snapshot) applyQueueSnapshot(snapshot);
+    })();
+    const selectedRefresh = selectedKey
+      ? refreshSelectedThread(selectedKey).then(() => {
+          if (connection === connectionGeneration.current && selectedThreadIdRef.current === selectedKey) recordConnectionMetric("session restore", selectedStarted);
+        }) : Promise.resolve();
+    const promise = Promise.allSettled([loadThreads(), queueRefresh, selectedRefresh]).then(results => {
+      if (revision !== sessionRefreshRequestSeq.current || connection !== connectionGeneration.current) return;
+      const error = results.find(result => result.status === "rejected");
+      if (error?.status === "rejected") throw error.reason;
+    }).finally(() => { if (sessionRefreshInFlight.current === promise) sessionRefreshInFlight.current = null; });
+    sessionRefreshInFlight.current = promise;
+    return promise;
+  }, [applyQueueSnapshot, call, loadThreads, refreshSelectedThread, recordConnectionMetric]);
 
   const showCompletionPopup = useCallback((threadId: string, turn?: Turn) => {
     const popupId = `${threadId}:${turn?.id || Date.now()}`;
@@ -2149,11 +2186,11 @@ export default function Home() {
       if (message.method === "account/rateLimits/updated") {
         if (provider === "claude") {
           const nextRateLimit = standardClaudeRateLimit(params);
-          if (nextRateLimit) setClaudeRateLimit(nextRateLimit);
+          if (nextRateLimit) { setClaudeRateLimit(nextRateLimit); setUsageUpdatedAt(Date.now()); }
           return;
         }
         const nextRateLimit = standardCodexRateLimit(params);
-        if (nextRateLimit) setCodexRateLimit(nextRateLimit);
+        if (nextRateLimit) { setCodexRateLimit(nextRateLimit); setUsageUpdatedAt(Date.now()); }
         return;
       }
 
@@ -2214,7 +2251,20 @@ export default function Home() {
       }
 
       if (message.method === "turn/started") {
+        if (selectedThreadIdRef.current === tid) firstOutputTurn.current = null;
         updateActiveTurn(tid, (params.turn as Turn | undefined)?.id || null);
+        setThreads((current) => current.map((thread) => (
+          threadKey(thread) === tid ? { ...thread, updatedAt: nowSeconds() } : thread
+        )));
+      }
+      if (message.method === "item/agentMessage/delta" && params.delta && selectedThreadIdRef.current === tid) {
+        const key = `${tid}:${params.turnId || params.itemId}`;
+        if (firstOutputTurn.current !== key) {
+          firstOutputTurn.current = key;
+          recordConnectionMetric("first text received");
+          performance.clearMarks("console:first-output-received");
+          performance.mark("console:first-output-received");
+        }
       }
       if (message.method === "turn/completed") {
         if (provider === "cursor") refreshCursorUsageRef.current();
@@ -2223,7 +2273,7 @@ export default function Home() {
         const terminalKind = terminalKindForTurn(turn);
         const terminalStatus = { type: terminalKind };
         setThreads((current) => current.map((thread) => (
-          threadKey(thread) === tid ? { ...thread, status: terminalStatus } : thread
+          threadKey(thread) === tid ? { ...thread, status: terminalStatus, updatedAt: nowSeconds() } : thread
         )));
         setSelectedThread((current) => (
           current && threadKey(current) === tid ? { ...current, status: terminalStatus } : current
@@ -2241,7 +2291,7 @@ export default function Home() {
       }
       applyTranscriptNotification(tid, message);
     },
-    [loadCompletedTurnDiff, showCompletionPopup, updateActiveTurn]
+    [loadCompletedTurnDiff, showCompletionPopup, updateActiveTurn, recordConnectionMetric]
   );
 
   useEffect(() => {
@@ -2277,15 +2327,15 @@ export default function Home() {
   }, [queueSnapshot.items, selectedThread?.id, threads]);
 
     useEffect(() => {
-      const savedProvider = window.localStorage.getItem(storageKey("provider"));
+      const savedProvider = browserStorage.getItem(storageKey("provider"));
       if (isAgentProviderId(savedProvider)) setSelectedProvider(savedProvider);
-      const saved = window.localStorage.getItem(storageKey("cwd"));
+      const saved = browserStorage.getItem(storageKey("cwd"));
       if (saved) setCwd(saved);
-    const recent = readStoredJson<string[]>(window.localStorage.getItem(storageKey("recentDirs")), []);
+    const recent = readStoredJson<string[]>(browserStorage.getItem(storageKey("recentDirs")), []);
     if (Array.isArray(recent)) setRecentDirs(recent.filter((item): item is string => typeof item === "string"));
-    const pinned = readStoredJson<string[]>(window.localStorage.getItem(storageKey("pinnedDirs")), []);
+    const pinned = readStoredJson<string[]>(browserStorage.getItem(storageKey("pinnedDirs")), []);
     if (Array.isArray(pinned)) setPinnedDirs(pinned.filter((item): item is string => typeof item === "string"));
-    const pinnedThreads = window.localStorage.getItem(pinnedThreadsStorageKey);
+    const pinnedThreads = browserStorage.getItem(pinnedThreadsStorageKey);
     if (pinnedThreads) {
       try {
         const parsed = JSON.parse(pinnedThreads);
@@ -2294,26 +2344,26 @@ export default function Home() {
         // Ignore malformed local UI preferences.
       }
     }
-    const collapsed = readStoredJson<string[]>(window.localStorage.getItem(storageKey("collapsedThreadGroups")), []);
+    const collapsed = readStoredJson<string[]>(browserStorage.getItem(storageKey("collapsedThreadGroups")), []);
     if (Array.isArray(collapsed)) setCollapsedThreadGroups(collapsed.filter((item): item is string => typeof item === "string"));
-    const savedThreadLayout = window.localStorage.getItem(threadLayoutStorageKey);
+    const savedThreadLayout = browserStorage.getItem(threadLayoutStorageKey);
     if (savedThreadLayout === "directories" || savedThreadLayout === "recent") setThreadLayout(savedThreadLayout);
-    const savedSidebarCollapsed = window.localStorage.getItem(storageKey("sidebarCollapsed"));
+    const savedSidebarCollapsed = browserStorage.getItem(storageKey("sidebarCollapsed"));
     if (savedSidebarCollapsed === "true") setSidebarCollapsed(true);
-    const savedSidebarWidth = Number(window.localStorage.getItem(sidebarWidthStorageKey));
+    const savedSidebarWidth = Number(browserStorage.getItem(sidebarWidthStorageKey));
     if (Number.isFinite(savedSidebarWidth) && savedSidebarWidth > 0) setSidebarWidth(clampSidebarWidth(savedSidebarWidth));
-    const savedContextWidth = Number(window.localStorage.getItem(contextWidthStorageKey));
+    const savedContextWidth = Number(browserStorage.getItem(contextWidthStorageKey));
     if (Number.isFinite(savedContextWidth) && savedContextWidth > 0) {
       const migrated = savedContextWidth === 360 || savedContextWidth === 300 ? defaultContextWidth : savedContextWidth;
       setContextWidth(clampContextWidth(migrated));
     }
       for (const provider of providerOrder) {
-        const savedRuntime = window.localStorage.getItem(storageKey(runtimeStorageKey(provider)));
+        const savedRuntime = browserStorage.getItem(storageKey(runtimeStorageKey(provider)));
         if (!savedRuntime) continue;
         try {
           const parsed = JSON.parse(savedRuntime) as Partial<SessionRuntimeSettings>;
           const restored = restoreProviderRuntimeSettings(provider, parsed);
-          window.localStorage.setItem(storageKey(runtimeStorageKey(provider)), JSON.stringify(restored));
+          browserStorage.setItem(storageKey(runtimeStorageKey(provider)), JSON.stringify(restored));
           setRuntimeSettingsByProvider((current) => ({
             ...current,
             [provider]: restored
@@ -2326,6 +2376,7 @@ export default function Home() {
       bootstrapPromise
         ?.then((nextBootstrap: Bootstrap) => {
           setBootstrap(nextBootstrap);
+          recordConnectionMetric("bootstrap");
           if (!saved && nextBootstrap.defaultCwd) setCwd(nextBootstrap.defaultCwd);
         })
         .catch((error) =>
@@ -2339,6 +2390,32 @@ export default function Home() {
 
       let stopped = false;
       let retry: number | null = null;
+      let lastFrameAt = Date.now();
+      let probing = false;
+      let checkingAuth = false;
+
+      async function checkAuthentication() {
+        if (checkingAuth || stopped) return;
+        checkingAuth = true;
+        try {
+          const next = await fetchBootstrap(AbortSignal.timeout(5000));
+          if (!stopped && !next.authenticated) setBootstrap(next);
+        } catch { /* Network failures follow reconnect backoff. */ }
+        finally { checkingAuth = false; }
+      }
+
+      async function probeConnection() {
+        const ws = wsRef.current;
+        if (stopped || probing || ws?.readyState !== WebSocket.OPEN || !bootstrapRef.current?.wsHeartbeat) return;
+        probing = true;
+        const started = performance.now();
+        let timer: number | undefined;
+        try {
+          await Promise.race([call({ type: "connection:ping" }), new Promise((_, reject) => { timer = window.setTimeout(() => reject(new Error("Connection probe timed out.")), 5000); })]);
+          if (ws === wsRef.current) recordConnectionMetric("round trip", started);
+        } catch { if (ws === wsRef.current) ws.close(); }
+        finally { window.clearTimeout(timer); probing = false; }
+      }
 
     function rejectPending(error: Error) {
       for (const pending of pendingReplies.current.values()) {
@@ -2361,6 +2438,8 @@ export default function Home() {
         }
 
         if (message.type === "queue:snapshot") {
+          queueSnapshotSeen.current = true;
+          for (const finish of snapshotWaiters.current) finish();
           applyQueueSnapshot(message.snapshot);
           return;
         }
@@ -2452,6 +2531,13 @@ export default function Home() {
           `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${appPath("/ws")}`
         );
         wsRef.current = ws;
+        const started = performance.now();
+        connectionGeneration.current++;
+        queueSnapshotSeen.current = false;
+        threadListRequestSeq.current++;
+        sessionRefreshRequestSeq.current++;
+        threadListInFlight.current = null;
+        sessionRefreshInFlight.current = null;
         setWsState("connecting");
 
         ws.onopen = () => {
@@ -2459,6 +2545,7 @@ export default function Home() {
           const reconnecting = reconnectAttempt.current > 0;
           reconnectAttempt.current = 0;
           setWsState("online");
+          recordConnectionMetric("connection", started);
           refreshSessionState(reconnecting ? "reconnect" : "connect").catch((error) => setNotice(error.message));
         };
         ws.onerror = () => {
@@ -2467,15 +2554,19 @@ export default function Home() {
         ws.onclose = () => {
           if (ws !== wsRef.current) return;
           wsRef.current = null;
+          connectionGeneration.current++;
+          for (const finish of snapshotWaiters.current) finish();
           rejectPending(new Error("WebSocket disconnected."));
           setWsState("offline");
           if (stopped) return;
+          void checkAuthentication();
           const attempt = reconnectAttempt.current++;
           const wait = Math.min(5_000, 400 * 2 ** Math.min(attempt, 4)) + Math.round(Math.random() * 200);
           retry = window.setTimeout(connect, wait);
         };
         ws.onmessage = (event) => {
           if (ws !== wsRef.current) return;
+          lastFrameAt = Date.now();
           try {
             handleGatewayEvent(JSON.parse(event.data));
           } catch {
@@ -2490,14 +2581,14 @@ export default function Home() {
           window.clearTimeout(retry);
           retry = null;
         }
-        if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) return;
+        if (wsRef.current?.readyState === WebSocket.OPEN) { void probeConnection(); return; }
+        if (wsRef.current?.readyState === WebSocket.CONNECTING) return;
         reconnectAttempt.current = 0;
         connect();
       }
 
       function handleVisibilityChange() {
         if (document.visibilityState !== "visible") return;
-        if (wsRef.current?.readyState === WebSocket.OPEN) return;
         reconnectNow();
       }
 
@@ -2506,26 +2597,31 @@ export default function Home() {
       }
   
       connect();
+      const heartbeat = window.setInterval(() => {
+        if (document.visibilityState === "visible" && Date.now() - lastFrameAt >= 30_000) void probeConnection();
+      }, 30_000);
       document.addEventListener("visibilitychange", handleVisibilityChange);
       window.addEventListener("online", handleOnline);
       window.addEventListener("focus", handleOnline);
 
       return () => {
         stopped = true;
+        window.clearInterval(heartbeat);
+        for (const finish of snapshotWaiters.current) finish();
         if (retry) window.clearTimeout(retry);
         document.removeEventListener("visibilitychange", handleVisibilityChange);
         window.removeEventListener("online", handleOnline);
         window.removeEventListener("focus", handleOnline);
         wsRef.current?.close();
       };
-    }, [applyNotification, applyQueueSnapshot, refreshSessionState, wsAllowed]);
+    }, [applyNotification, applyQueueSnapshot, call, refreshSessionState, recordConnectionMetric, wsAllowed]);
 
   useEffect(() => {
     if (wsState !== "online") return;
     codex("account/rateLimits/read")
       .then((response) => {
         const nextRateLimit = standardCodexRateLimit(response);
-        if (nextRateLimit) setCodexRateLimit(nextRateLimit);
+        if (nextRateLimit) { setCodexRateLimit(nextRateLimit); setUsageUpdatedAt(Date.now()); }
       })
       .catch(() => undefined);
     agent("codex", "thread/loaded/list", {})
@@ -2542,7 +2638,7 @@ export default function Home() {
 
   useEffect(() => {
     const nextRateLimit = standardClaudeRateLimit(bootstrap?.providers?.claude?.rateLimit);
-    if (nextRateLimit) setClaudeRateLimit(nextRateLimit);
+    if (nextRateLimit) { setClaudeRateLimit(nextRateLimit); setUsageUpdatedAt(Date.now()); }
     const nextCursorUsage = parseCursorUsage(bootstrap?.providers?.cursor?.rateLimit);
     if (nextCursorUsage) setCursorUsage(nextCursorUsage);
   }, [bootstrap]);
@@ -2551,7 +2647,7 @@ export default function Home() {
     agent("cursor", "account/usage/read", {})
       .then((response) => {
         const next = parseCursorUsage(response);
-        if (next) setCursorUsage(next);
+        if (next) { setCursorUsage(next); setUsageUpdatedAt(Date.now()); }
       })
       .catch(() => undefined);
   }, [agent]);
@@ -2562,13 +2658,13 @@ export default function Home() {
     if (wsState !== "online") return;
     refreshCursorUsage();
     if (selectedProvider !== "cursor") return;
-    const timer = window.setInterval(refreshCursorUsage, 60_000);
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") refreshCursorUsage(); }, 60_000);
     return () => window.clearInterval(timer);
   }, [refreshCursorUsage, selectedProvider, wsState]);
 
   useEffect(() => {
     if (wsState !== "online" || legacyQueueMigrationRunning.current) return;
-    const raw = window.localStorage.getItem(promptQueueStorageKey);
+    const raw = browserStorage.getItem(promptQueueStorageKey);
     if (!raw) return;
 
     let legacy: Record<string, Array<{ id?: string; threadId?: string; text?: string; createdAt?: number }>>;
@@ -2622,9 +2718,9 @@ export default function Home() {
       }
 
       if (Object.keys(remaining).length) {
-        window.localStorage.setItem(promptQueueStorageKey, JSON.stringify(remaining));
+        browserStorage.setItem(promptQueueStorageKey, JSON.stringify(remaining));
       } else {
-        window.localStorage.removeItem(promptQueueStorageKey);
+        browserStorage.removeItem(promptQueueStorageKey);
       }
     })().finally(() => {
       legacyQueueMigrationRunning.current = false;
@@ -2798,7 +2894,7 @@ export default function Home() {
   function rememberDirectory(path: string) {
     const next = [path, ...recentDirs.filter((item) => item !== path)].slice(0, 8);
     setRecentDirs(next);
-    window.localStorage.setItem(storageKey("recentDirs"), JSON.stringify(next));
+    browserStorage.setItem(storageKey("recentDirs"), JSON.stringify(next));
   }
 
   function togglePinnedDirectory(path: string) {
@@ -2808,7 +2904,7 @@ export default function Home() {
       const next = current.some((item) => normalizeDirectoryPath(item) === target)
         ? current.filter((item) => normalizeDirectoryPath(item) !== target)
         : [target, ...current.filter((item) => normalizeDirectoryPath(item) !== target)].slice(0, 12);
-      window.localStorage.setItem(storageKey("pinnedDirs"), JSON.stringify(next));
+      browserStorage.setItem(storageKey("pinnedDirs"), JSON.stringify(next));
       return next;
     });
   }
@@ -2817,7 +2913,7 @@ export default function Home() {
     setPinnedThreadKeys((current) => {
       const next = current.includes(key) ? current.filter((item) => item !== key) : [...current, key];
       try {
-        window.localStorage.setItem(pinnedThreadsStorageKey, JSON.stringify(next));
+        browserStorage.setItem(pinnedThreadsStorageKey, JSON.stringify(next));
       } catch {
         // The UI still works when browser storage is unavailable.
       }
@@ -2830,7 +2926,7 @@ export default function Home() {
       if (!current.includes(key)) return current;
       const next = current.filter((item) => item !== key);
       try {
-        window.localStorage.setItem(pinnedThreadsStorageKey, JSON.stringify(next));
+        browserStorage.setItem(pinnedThreadsStorageKey, JSON.stringify(next));
       } catch {
         // The UI still works when browser storage is unavailable.
       }
@@ -2851,7 +2947,7 @@ export default function Home() {
       const filtered = current.filter((item) => normalizeDirectoryPath(item) !== sourceNorm);
       const targetIndex = filtered.findIndex((item) => normalizeDirectoryPath(item) === targetNorm);
       const next = [...filtered.slice(0, targetIndex), sourceNorm, ...filtered.slice(targetIndex)];
-      window.localStorage.setItem(storageKey("pinnedDirs"), JSON.stringify(next));
+      browserStorage.setItem(storageKey("pinnedDirs"), JSON.stringify(next));
       return next;
     });
   }
@@ -2868,25 +2964,25 @@ export default function Home() {
   function toggleThreadGroup(cwd: string) {
     setCollapsedThreadGroups((current) => {
       const next = current.includes(cwd) ? current.filter((item) => item !== cwd) : [...current, cwd];
-      window.localStorage.setItem(storageKey("collapsedThreadGroups"), JSON.stringify(next));
+      browserStorage.setItem(storageKey("collapsedThreadGroups"), JSON.stringify(next));
       return next;
     });
   }
 
   function updateThreadLayout(next: ThreadLayout) {
     setThreadLayout(next);
-    window.localStorage.setItem(threadLayoutStorageKey, next);
+    browserStorage.setItem(threadLayoutStorageKey, next);
   }
 
   function setSidebarCollapsedValue(next: boolean) {
     setSidebarCollapsed(next);
-    window.localStorage.setItem(storageKey("sidebarCollapsed"), String(next));
+    browserStorage.setItem(storageKey("sidebarCollapsed"), String(next));
   }
 
   function setSidebarWidthValue(width: number) {
     const next = clampSidebarWidth(width);
     setSidebarWidth(next);
-    window.localStorage.setItem(sidebarWidthStorageKey, String(next));
+    browserStorage.setItem(sidebarWidthStorageKey, String(next));
   }
 
   function startSidebarResize(event: ReactPointerEvent<HTMLButtonElement>) {
@@ -2929,7 +3025,7 @@ export default function Home() {
     const stopResize = () => {
       setContextWidth(nextWidth);
       try {
-        window.localStorage.setItem(contextWidthStorageKey, String(nextWidth));
+        browserStorage.setItem(contextWidthStorageKey, String(nextWidth));
       } catch {
         // The UI still works when browser storage is unavailable.
       }
@@ -3015,7 +3111,7 @@ export default function Home() {
   function applyResolvedDirectory(result: ProjectInfo) {
     setProject(result);
     setCwd(result.realpath);
-    window.localStorage.setItem(storageKey("cwd"), result.realpath);
+    browserStorage.setItem(storageKey("cwd"), result.realpath);
     rememberDirectory(result.realpath);
   }
 
@@ -3053,11 +3149,32 @@ export default function Home() {
   }
 
   function beginDraftSession() {
+    selectionRevision.current++;
     selectedThreadIdRef.current = null;
     setSelectedThread(null);
     setWorkspaceView("chat");
     setMobilePanel(null);
-    window.setTimeout(() => composerRef.current?.focus(), 0);
+    if (!matchMedia("(max-width: 760px), (any-pointer: coarse) and (max-height: 500px)").matches) window.setTimeout(() => composerRef.current?.focus(), 0);
+  }
+
+  function prepareHandoff() {
+    if (!selectedThread) return;
+    const view = getThreadViewState();
+    const items = view.itemsByThread[currentThreadKey] || {};
+    const messages = (view.itemOrderByThread[currentThreadKey] || [])
+      .map((id) => items[id])
+      .filter((item) => item && (item.type === "userMessage" || item.type === "agentMessage" && item.phase === "final"))
+      .slice(-6);
+    const excerpt = messages.map((item) => `${item.type === "userMessage" ? "User" : "Assistant"}: ${itemText(item).slice(0, 2400)}`).join("\n\n");
+    const draft = `Continue the task in ${selectedThread.cwd || cwd}.\n\nHandoff excerpts from ${threadTitle(selectedThread)}:\n${excerpt || "Add the task goal and latest progress here."}\n\nNext step: `;
+    const key = `${selectedProvider}:draft:${selectedThread.cwd || cwd}`;
+    const existing = draftsRef.current[key] ?? readSessionDraft(key);
+    const combined = existing ? `${existing}\n\n${draft}` : draft;
+    draftsRef.current[key] = combined;
+    saveSessionDraft(key, combined);
+    setCwd(selectedThread.cwd || cwd);
+    beginDraftSession();
+    setNotice("Handoff draft prepared from recent messages. Review it and add your next step before sending.");
   }
 
   async function startThread(
@@ -3108,7 +3225,7 @@ export default function Home() {
         markThreadLive(key);
         await sendToThread(key, initialPrompt || "", threadResponse.model || "", initialAttachments, threadRuntime.mode, titled);
       } else {
-        window.setTimeout(() => composerRef.current?.focus(), 0);
+        if (!matchMedia("(max-width: 760px), (any-pointer: coarse) and (max-height: 500px)").matches) window.setTimeout(() => composerRef.current?.focus(), 0);
       }
     } finally {
       sessionCreatingRef.current = false;
@@ -3146,6 +3263,9 @@ export default function Home() {
   };
 
   async function resumeThread(thread: Thread) {
+    const revision = ++selectionRevision.current;
+    const connection = connectionGeneration.current;
+    const started = performance.now();
     // Switch immediately. Cached turns stay visible; Codex without cache
     // loads history from this single resume instead of a follow-up thread/read.
     const provider = providerOf(thread);
@@ -3156,11 +3276,11 @@ export default function Home() {
     selectedThreadIdRef.current = key;
     selectProviderPreference(provider);
     setSelectedThread(listedThread);
-    setShowAllHistory(false);
+    setHistoryLimit(40);
     const hadCache = threadViewHasConversationHistory(key);
     if (!hadCache) setHistoryLoadingThreadId(key);
     setMobilePanel(null);
-    window.setTimeout(() => composerRef.current?.focus(), 0);
+    if (!matchMedia("(max-width: 760px), (any-pointer: coarse) and (max-height: 500px)").matches) window.setTimeout(() => composerRef.current?.focus(), 0);
 
     const excludeTurns = provider === "codex" && hadCache;
 
@@ -3176,8 +3296,9 @@ export default function Home() {
 
       // Drop the response if the user has switched to a different session in
       // the meantime, otherwise the slow reply would clobber the newer one.
-      if (selectedThreadIdRef.current !== key) return;
+      if (selectedThreadIdRef.current !== key || revision !== selectionRevision.current || connection !== connectionGeneration.current) return;
 
+      recordConnectionMetric("session restore", started);
       const resumed = normalizeThread({ ...(response.thread as Thread), provider });
       if (provider === "codex") warmThreadIdsRef.current.add(key);
       selectedThreadIdRef.current = key;
@@ -3278,7 +3399,7 @@ export default function Home() {
   }
 
   async function executeCurrentPlan() {
-    if (!selectedThread || wsState !== "online" || planSubmitting) return;
+    if (!selectedThread || wsState !== "online" || planSubmittingRef.current) return;
     if (!sessionExecutionState.planPayloadReady) {
       setNotice("Wait for the Plan result before executing it.", "warning");
       return;
@@ -3291,6 +3412,7 @@ export default function Home() {
       ...(runtimeSettingsByProvider[provider] || providerRuntimeDefaults(provider)),
       mode: "default" as const
     };
+    planSubmittingRef.current = true;
     setPlanSubmitting(true);
     try {
       if (activeTurnId) {
@@ -3311,6 +3433,7 @@ export default function Home() {
       await refreshSelectedThread(threadId).catch(() => undefined);
       setNotice(error instanceof Error ? error.message : String(error), "error");
     } finally {
+      planSubmittingRef.current = false;
       setPlanSubmitting(false);
     }
   }
@@ -3330,19 +3453,24 @@ export default function Home() {
   }
 
   function clearComposerDraft() {
-    const key = selectedThreadIdRef.current || "";
+    const key = composerDraftKeyRef.current;
     draftsRef.current[key] = "";
+    saveSessionDraft(key, "");
     composerRef.current?.setDraft("");
   }
 
-  function restoreComposerDraft(text: string) {
-    const key = selectedThreadIdRef.current || "";
-    draftsRef.current[key] = text;
-    composerRef.current?.setDraft(text);
+  function restoreComposerDraft(text: string, key = composerDraftKeyRef.current) {
+    // An async failure must restore the original session, even after navigation.
+    const existing = draftsRef.current[key] || "";
+    const restored = existing && existing !== text ? `${text}\n\n${existing}` : text;
+    draftsRef.current[key] = restored;
+    saveSessionDraft(key, restored);
+    if (key === composerDraftKeyRef.current) composerRef.current?.setDraft(restored);
   }
 
   async function submitPrompt(text: string) {
     if (composerSubmitting) return;
+    const submittedDraftKey = composerDraftKeyRef.current;
     const inputAttachments = attachments;
     const chips = fileContexts;
     if (!text && inputAttachments.length === 0 && chips.length === 0) return;
@@ -3401,8 +3529,8 @@ export default function Home() {
       if (existingThread) clearThreadLive(threadKey(existingThread));
       setPendingPrompt("");
       setNotice(error instanceof Error ? error.message : String(error));
-      restoreComposerDraft(text);
-      setFileContexts(chips);
+      restoreComposerDraft(text, submittedDraftKey);
+      if (submittedDraftKey === composerDraftKeyRef.current) setFileContexts(chips);
     } finally {
       if (lockComposer) setComposerSubmitting(false);
     }
@@ -4778,24 +4906,6 @@ export default function Home() {
         </section>
 
         <section className="panel projectPanel">
-          <button
-            aria-haspopup="dialog"
-            className="directorySummaryButton"
-            type="button"
-            onClick={() => {
-              setMobilePanel(null);
-              setDirectoryPickerOpen(true);
-            }}
-          >
-            <span className="directorySummaryIcon">
-              <Folder aria-hidden="true" size={18} />
-            </span>
-            <span className="directorySummaryText">
-              <strong title={project?.realpath || cwd}>{currentProjectLabel}</strong>
-              <small title={project?.realpath || cwd}>{project?.realpath || cwd || "Choose a directory"}</small>
-            </span>
-            <ChevronRight aria-hidden="true" size={16} />
-          </button>
 
           {project?.git?.insideWorkTree ? (
             <div className="directoryContextRow">
@@ -4826,15 +4936,6 @@ export default function Home() {
 	            Sessions
 	          </span>
 	          <div className="threadHeaderActions">
-            <button
-              aria-label="New session"
-              disabled={!cwd.trim()}
-              title="New session"
-              type="button"
-              onClick={beginDraftSession}
-            >
-              <SquarePen aria-hidden="true" size={16} />
-            </button>
             <button aria-label="Manage sessions" title="Manage sessions" type="button" onClick={openSessionManager}>
               <ListTree aria-hidden="true" size={16} />
             </button>
@@ -5003,7 +5104,7 @@ export default function Home() {
             <div className="topbarTitle">
               <div className="topbarTitleRow">
                 <span className="topbarTitleText">
-                  <strong>{threadTitle(selectedThread)}</strong>
+                  <strong title={threadTitle(selectedThread)}>{threadTitle(selectedThread)}</strong>
                   {selectedThread ? (
                     <button
                       aria-label="Rename session"
@@ -5016,12 +5117,7 @@ export default function Home() {
                     </button>
                   ) : null}
                 </span>
-                {isCursorProvider || selectedProvider === "claude" ? (
-                  <span className="sessionModelInline" title={`${providerName(selectedProvider)} model: ${displayedModel || "auto"}`}>
-                    {displayedModel || "auto"}
-                  </span>
-                ) : null}
-                <nav className="mobileSessionStepper" aria-label="Switch session">
+                {selectedThread ? <nav className="mobileSessionStepper" aria-label="Switch session">
                   <button
                     aria-label={newerThread ? `Newer session: ${threadTitle(newerThread)}` : "No newer session"}
                     disabled={!newerThread}
@@ -5046,49 +5142,32 @@ export default function Home() {
                   >
                     <ChevronRight aria-hidden="true" size={16} />
                   </button>
-                </nav>
+                </nav> : null}
               </div>
               <div className="topbarMeta">
-                <span className="topbarPath" dir="ltr" title={selectedThread?.cwd || cwd || undefined} translate="no">
-                  {selectedThread?.cwd || cwd || "No server directory selected"}
-                </span>
+                <button type="button" className="topbarPath" dir="ltr" title={selectedThread?.cwd || cwd || undefined} translate="no" onClick={() => setDirectoryPickerOpen(true)} aria-label="Choose working directory">
+                  {selectedThread?.cwd || cwd || "Choose a working directory"}
+                </button>
                 {selectedThread && sessionExecutionState.phase !== "idle" ? (
                   <span className={`sessionState state-${sessionExecutionState.phase}`}>
                     {threadStatusText(sessionExecutionState.phase)}
                   </span>
                 ) : null}
-                {isCursorProvider ? (
-                  <span className="unsafeModeMeta" title={cursorExecutionModeDescription}>{cursorExecutionModeLabel}</span>
-                ) : (
-                  <>
-                    <span className="sessionModelMeta" title={`Model: ${displayedModel || "server default"}`}>
-                      {displayedModel || "server default"}
-                    </span>
-                    {supportsReasoning ? (
-                      <span className="sessionThinkingMeta" title={`Thinking effort: ${displayedReasoning || "default"}`}>
-                        Thinking {displayedReasoning || "default"}
-                      </span>
-                    ) : null}
-                    {supportsServiceTier ? (
-                      <span
-                        className={`fastModeMeta ${displayedFastMode ? "enabled" : ""}`}
-                        data-service-tier={displayedServiceTier}
-                        title={`${displayedFastMode ? "Fast mode enabled" : "Fast mode disabled"} · Service tier: ${displayedServiceTier}`}
-                      >
-                        {fastModeLabel(displayedServiceTier)} mode
-                      </span>
-                    ) : null}
-                  </>
-                )}
+                <button className="runtimeQuickButton" type="button" onClick={() => setWorkspaceView("runtime")} aria-label="Session settings">
+                  {displayedModel || `${providerName(selectedProvider)} default`}
+                </button>
+                {isCursorProvider ? <span className="unsafeModeMeta" title={cursorExecutionModeDescription}>{cursorExecutionModeLabel}</span> : <>
+                  {supportsReasoning ? <span className="sessionThinkingMeta" title={`Thinking effort: ${displayedReasoning || "default"}`}>Thinking {displayedReasoning || "default"}</span> : null}
+                  {supportsServiceTier ? <span className={`fastModeMeta ${displayedFastMode ? "enabled" : ""}`}>{fastModeLabel(displayedServiceTier)} mode</span> : null}
+                </>}
               </div>
           </div>
           <div className="topActions">
+            <button className="appearanceButton" type="button" aria-label="Appearance" title="Appearance" onClick={() => setAppearanceOpen(true)}><Palette size={18} /></button>
+            <button className="mobileToolsButton" type="button" aria-label="Tools" title="Tools" onClick={() => setToolsOpen(true)}><MoreHorizontal size={20} /></button>
+            <button className="usageDetailsControl" type="button" aria-label="Usage details" title={usageUpdatedAt ? `Updated ${new Date(usageUpdatedAt).toLocaleTimeString()}` : "Usage details"} onClick={() => setWorkspaceView("runtime")}>
             {isCursorProvider ? (
               <>
-                <SessionModelPill
-                  model={displayedModel || "auto"}
-                  onClick={() => openCommandPanel("model").catch((error) => setNotice(error instanceof Error ? error.message : String(error), "error"))}
-                />
                 <CursorUsagePill usage={cursorUsage} />
               </>
             ) : selectedProvider === "claude" ? (
@@ -5100,8 +5179,9 @@ export default function Home() {
                 windowTitle={`Standard Codex bucket · ${formatCodexPercent((codexRateLimit?.windowDurationMins || 0) / 1_440)} day window`}
               />
             )}
+            </button>
             <span className={`statusPill ${wsState}`}>{connectionLabel(wsState)}</span>
-            <button aria-label="Log out" title="Log out" type="button" onClick={logout}>
+            <button className="logoutButton" aria-label="Log out" title="Log out" type="button" onClick={logout}>
               <LogOut aria-hidden="true" size={17} />
             </button>
           </div>
@@ -5137,14 +5217,20 @@ export default function Home() {
 
         <div className={`workbench ${workspaceView === "chat" ? "contextClosed" : "contextOpen"}`}>
           <section className="chatColumn">
+          {tokenUsageSummary(tokenUsage).lastInput !== null && (tokenUsageSummary(tokenUsage).lastInput || 0) >= 100000 ? (
+            <button className="contextHint" type="button" onClick={() => setWorkspaceView("runtime")}>Large conversation · Review context options</button>
+          ) : null}
+          <RunProgress item={queueSnapshot.items.filter((item) => item.threadKey === currentThreadKey).find((item) => ["dispatching", "running", "waiting_for_input"].includes(item.status)) || queueSnapshot.items.filter((item) => item.threadKey === currentThreadKey).at(-1)} active={Boolean(activeTurnId)} />
           <ConversationPane
             threadKey={currentThreadKey}
             provider={selectedThreadProvider}
             providerLabel={providerName(selectedProvider)}
+            directory={cwd}
+            onChooseDirectory={() => setDirectoryPickerOpen(true)}
             hasThread={Boolean(selectedThread)}
             activeTurnId={activeTurnId}
             historyLoading={Boolean(historyLoadingThreadId && currentThreadKey === historyLoadingThreadId)}
-            showAllHistory={showAllHistory}
+            historyLimit={historyLimit}
             onShowAllHistory={onShowAllHistory}
             diagnostic={gatewayDiagnostic}
             onOpenDiff={openTurnDiff}
@@ -5181,8 +5267,8 @@ export default function Home() {
 
         <Composer
           ref={composerRef}
-          threadKey={currentThreadKey}
-          initialDraft={draftsRef.current[currentThreadKey] || ""}
+          threadKey={composerDraftKey}
+          initialDraft={draftsRef.current[composerDraftKey] || ""}
           providerLabel={providerName(selectedProvider)}
           wsState={wsState}
           submitting={composerSubmitting}
@@ -5199,7 +5285,8 @@ export default function Home() {
           queueAction={queueAction}
           slashContext={slashContext}
           onDraftChange={(value) => {
-            draftsRef.current[currentThreadKey] = value;
+            draftsRef.current[composerDraftKey] = value;
+            saveSessionDraft(composerDraftKey, value);
           }}
           onSubmit={submitPrompt}
           onSteer={submitSteerPrompt}
@@ -5264,6 +5351,8 @@ export default function Home() {
                   {!workspaceDiffLoading && !workspaceDiffError ? <ProjectDiffPanel data={workspaceDiff} onOpenFile={openWorkspaceFile} /> : null}
                 </section>
               ) : (
+                <>
+                <details className="connectionTimings"><summary>Connection timing</summary><dl>{Object.entries(connectionMetrics).map(([stage, ms]) => <Fragment key={stage}><dt>{stage}</dt><dd>{ms} ms</dd></Fragment>)}</dl><p>Page phases use time since navigation; connection and restore use duration.</p></details>
                 <RuntimePanel
                   data={{
                     provider: providerName(selectedThread ? selectedThreadProvider : selectedProvider),
@@ -5275,6 +5364,7 @@ export default function Home() {
                     model: displayedModel || "server default",
                     reasoning: supportsReasoning ? displayedReasoning || "server default" : undefined,
                     serviceTier: supportsServiceTier ? displayedServiceTier : undefined,
+                    quota: selectedProvider === "codex" && codexRateLimit ? `${formatCodexPercent(remainingCodexPercent(codexRateLimit.usedPercent))}% remaining · resets ${formatCodexResetFull(codexRateLimit.resetsAt)}` : undefined,
                     usage: isCursorProvider
                       ? (cursorUsage ? formatCursorUsageLabel(cursorUsage) : undefined)
                       : (usageLabel || (selectedProvider === "claude"
@@ -5286,18 +5376,28 @@ export default function Home() {
                     supportsPermissions: supportsApprovals,
                     supportsMcp: selectedProvider === "codex"
                   }}
+                  onCompact={selectedThread && selectedProvider === "codex" ? () => {
+                    codex("thread/compact/start", { threadId: nativeThreadId(selectedThread) })
+                      .then(() => setNotice("Conversation compaction started. Usage updates when the provider reports it."))
+                      .catch((error) => setNotice(error.message, "error"));
+                  } : undefined}
+                  onHandoff={selectedThread ? prepareHandoff : undefined}
+                  contextBusy={sessionExecutionState.phase === "running" || sessionExecutionState.phase === "waiting" || Boolean(historyLoadingThreadId)}
                   onOpenProvider={() => openCommandPanel("provider").catch((error) => setNotice(error.message, "error"))}
                   onOpenModel={() => openCommandPanel("model").catch((error) => setNotice(error.message, "error"))}
                   onOpenPermissions={() => openCommandPanel("permissions").catch((error) => setNotice(error.message, "error"))}
                   onOpenMcp={() => openCommandPanel("mcp").catch((error) => setNotice(error.message, "error"))}
                   onOpenStatus={() => openCommandPanel("status").catch((error) => setNotice(error.message, "error"))}
                 />
+                </>
               )}
             </aside>
           ) : null}
         </div>
       </section>
 
+      {appearanceOpen ? <AppearanceDialog value={appearance} onChange={updateAppearance} onClose={() => setAppearanceOpen(false)} /> : null}
+      {toolsOpen ? <ToolsDialog onClose={() => setToolsOpen(false)} onView={view => { setToolsOpen(false); setMobilePanel(null); if (view === "diff") setWorkspaceDiffKind("working"); setWorkspaceView(view); }} onAppearance={() => { setToolsOpen(false); setAppearanceOpen(true); }} onDirectory={() => { setToolsOpen(false); setDirectoryPickerOpen(true); }} onLogout={logout} /> : null}
       {sessionManagerOpen ? renderSessionManager() : null}
       {commandPanel ? renderCommandPanel() : null}
       {activeRequest && providerCapability(providerStatus(bootstrap, activeRequestProvider), "approvals") ? (
@@ -5343,8 +5443,8 @@ export default function Home() {
           <span>Chat</span>
         </button>
         <button
+          className={`mobileDetailedOnly ${workspaceView === "files" && !mobilePanel ? "active" : ""}`}
           aria-label="Files"
-          className={workspaceView === "files" && !mobilePanel ? "active" : ""}
           type="button"
           onClick={() => {
             setMobilePanel(null);
@@ -5357,8 +5457,8 @@ export default function Home() {
           <span>Files</span>
         </button>
         <button
+          className={`mobileDetailedOnly ${workspaceView === "diff" && !mobilePanel ? "active" : ""}`}
           aria-label="Changes"
-          className={workspaceView === "diff" && !mobilePanel ? "active" : ""}
           type="button"
           onClick={() => {
             setMobilePanel(null);
@@ -5372,6 +5472,7 @@ export default function Home() {
           <span>Changes</span>
           {workspaceDiff?.hasChanges ? <small>{workspaceDiff.files.length}</small> : null}
         </button>
+        <button className="mobileMinimalOnly" aria-label="Tools" type="button" onClick={() => setToolsOpen(true)}><Wrench size={18} /><span>Tools</span></button>
       </nav>
     </main>
   );

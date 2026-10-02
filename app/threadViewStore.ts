@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { assistantMessagePhase, uniqueAppend, uniqueItems, userItemMatchesPrompt, type ThreadItem, type Turn, type TurnGroup } from "./threadModel";
+import { assistantMessagePhase, partitionTurnItems, statusLabel, uniqueAppend, uniqueItems, userItemMatchesPrompt, type ThreadItem, type Turn, type TurnGroup } from "./threadModel";
 
 export const EMPTY_ITEMS: Record<string, ThreadItem> = Object.freeze({}) as Record<string, ThreadItem>;
 export const EMPTY_TURNS: Record<string, TurnGroup> = Object.freeze({}) as Record<string, TurnGroup>;
@@ -327,6 +327,29 @@ export function latestPlanTextFor(threadKey: string) {
 /** Return executable Plan content without promoting commentary or reasoning. */
 export function latestPlanPayloadFor(threadKey: string, allowLegacyFinal = false) {
   const items = state.itemsByThread[threadKey] || EMPTY_ITEMS;
+  if (threadKey.startsWith("claude:")) {
+    // Claude has no final-answer phase. Match the conversation's terminal reply,
+    // scoped to the latest turn so a new/failed turn cannot execute an old plan.
+    if (!allowLegacyFinal || state.pendingPromptByThread[threadKey]?.trim()) return "";
+    const turnOrder = state.turnOrderByThread[threadKey] || EMPTY_ORDER;
+    let turn: TurnGroup | undefined;
+    for (let index = turnOrder.length - 1; index >= 0; index -= 1) {
+      const candidate = state.turnsByThread[threadKey]?.[turnOrder[index]];
+      if (!candidate) continue;
+      // History hydration preserves synthetic diff groups after transcript turns.
+      if (candidate.itemIds.length && candidate.itemIds.every((id) => items[id]?.type === "diff")) continue;
+      turn = candidate;
+      break;
+    }
+    if (!turn || turn.pending || statusLabel(turn.status).toLowerCase() !== "completed") return "";
+    const turnItems = turn.itemIds.map((id) => items[id]).filter((item): item is ThreadItem => Boolean(item));
+    const { finalItems } = partitionTurnItems(turnItems, false, true);
+    for (const item of [...finalItems].reverse()) {
+      const text = String(item.text || "").trim();
+      if (text) return text.slice(0, 12000);
+    }
+    return "";
+  }
   const itemOrder = state.itemOrderByThread[threadKey] || EMPTY_ORDER;
   for (let index = itemOrder.length - 1; index >= 0; index -= 1) {
     const item = items[itemOrder[index]];

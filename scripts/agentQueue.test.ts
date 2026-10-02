@@ -171,6 +171,32 @@ await withQueue(async ({ queue, starts }) => {
   }
 }
 
+await withQueue(async ({ store, databasePath }) => {
+  // Snapshots carry stored diffs to every browser on every queue change.
+  store.enqueue(item("queued-big-diff", "thread-big-diff", 1));
+  store.setDiff("queued-big-diff", {
+    root: "/tmp",
+    branch: "main",
+    status: "",
+    diff: `${"+".repeat(99)}\n`.repeat(10_000),
+    files: [],
+    additions: 10_000,
+    deletions: 0,
+    hasChanges: true
+  });
+  const stored = store.get("queued-big-diff")?.diff;
+  assert.equal(stored?.truncated, true);
+  assert.ok(stored!.diff.length <= 512 * 1024 && stored!.diff.endsWith("+"));
+
+  // Stale finished items are pruned as new work arrives, not only at startup.
+  store.setStatus("queued-big-diff", "completed");
+  const db = new DatabaseSync(databasePath);
+  db.prepare("UPDATE queue_items SET updated_at = 0 WHERE id = ?").run("queued-big-diff");
+  db.close();
+  store.enqueue(item("queued-after-prune", "thread-big-diff", 2));
+  assert.equal(store.get("queued-big-diff"), null);
+});
+
 await withQueue(async ({ queue, store, starts }) => {
   queue.enqueue(item("queued-fail", "thread-1", 1));
   queue.enqueue(item("queued-after", "thread-1", 2));
@@ -300,6 +326,29 @@ await withQueue(async ({ queue, store }) => {
   store.close();
   await rm(root, { recursive: true, force: true });
 }
+
+
+await withQueue(async ({ queue, store, databasePath }) => {
+  const queued = queue.enqueue(item("queued-timed", "timed-thread", Date.now() / 1000));
+  await waitFor(() => store.get(queued.id)?.status === "running", "timed run start");
+  queue.markStage(queued.id, "resumeAt");
+  queue.markStage(queued.id, "resumedAt");
+  queue.handleProviderActivity("cursor", "timed-thread", "firstOutputAt");
+  const first = store.get(queued.id)!.timings!.firstOutputAt;
+  queue.handleProviderActivity("cursor", "timed-thread", "firstOutputAt");
+  assert.equal(store.get(queued.id)!.timings!.firstOutputAt, first, "first output is immutable");
+  await queue.handleProviderTerminal("cursor", "timed-thread", `run-${queued.id}`, "failed");
+  const timings = store.get(queued.id)!.timings!;
+  assert.ok(timings.acceptedAt! <= timings.dispatchAt!);
+  assert.ok(timings.startedAt! <= timings.firstOutputAt!);
+  assert.ok(timings.firstOutputAt! <= timings.completedAt!);
+  const reader = new DatabaseSync(databasePath, { readOnly: true });
+  const persisted = reader.prepare("SELECT timings_json FROM queue_items WHERE id = ?").get(queued.id) as { timings_json: string };
+  assert.deepEqual(JSON.parse(persisted.timings_json), timings);
+  reader.close();
+  store.retry(queued.id);
+  assert.equal(store.get(queued.id)!.timings!.firstOutputAt, undefined, "retry starts a new timing attempt");
+});
 
 console.log("agent queue persistence and scheduling tests passed");
 }

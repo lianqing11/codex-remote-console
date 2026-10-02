@@ -11,7 +11,10 @@ export type AgentQueueStatus =
   | "cancelled"
   | "needs_review";
 
+export type QueueTimings = Partial<Record<"acceptedAt" | "dispatchAt" | "resumeAt" | "resumedAt" | "startRequestedAt" | "startedAt" | "firstOutputAt" | "firstToolAt" | "completedAt", number>>;
+
 export type AgentQueueItem = {
+  timings?: QueueTimings;
   id: string;
   provider: AgentProviderId;
   threadKey: string;

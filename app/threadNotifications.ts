@@ -114,6 +114,8 @@ export function applyTranscriptNotification(
   }
 
   if ((method === "item/started" || method === "item/completed") && params.item) {
+    // A queued delta flushed after the full item would append a duplicate tail.
+    flushPendingDeltas();
     clearPendingPrompt(threadId);
     appendItem(threadId, params.item, params.turnId || params.item.turnId || eventTurnId);
     return "handled";

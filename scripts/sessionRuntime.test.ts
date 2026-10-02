@@ -20,8 +20,8 @@ import {
 import { normalizeAgentThread } from "../app/cursorAdapter";
 
 assert.equal(defaultRuntimeSettings.provider, "codex");
-assert.equal(defaultRuntimeSettings.reasoningEffort, "xhigh");
-assert.deepEqual(runtimeTurnParams(defaultRuntimeSettings), { effort: "xhigh" });
+assert.equal(defaultRuntimeSettings.reasoningEffort, "medium");
+assert.deepEqual(runtimeTurnParams(defaultRuntimeSettings), { effort: "medium" });
 
 const presets = [
   { name: "Default", mode: "default" as const, reasoning_effort: "medium" as const },
@@ -30,11 +30,11 @@ const presets = [
 const configuredSettings = { ...defaultRuntimeSettings, model: "gpt-test" };
 assert.equal(
   buildCollaborationMode(configuredSettings, presets, undefined, "default")?.settings.reasoning_effort,
-  "xhigh"
+  "medium"
 );
 assert.equal(
   buildCollaborationMode(configuredSettings, presets, undefined, "plan")?.settings.reasoning_effort,
-  "xhigh"
+  "medium"
 );
 
 const resumed = mergeThreadRuntimeSettings(defaultRuntimeSettings, {
@@ -43,7 +43,7 @@ const resumed = mergeThreadRuntimeSettings(defaultRuntimeSettings, {
   sandboxMode: "read-only"
 });
 assert.equal(resumed.model, "gpt-test");
-assert.equal(resumed.reasoningEffort, "xhigh");
+assert.equal(resumed.reasoningEffort, "medium");
 assert.equal(resumed.sandboxMode, "read-only");
 
 const explicitMedium = { ...defaultRuntimeSettings, reasoningEffort: "medium" as const };
@@ -103,6 +103,19 @@ assert.equal((streamEventToNotification({
   text: "pong",
   delta: true
 }, "claude")?.params as { delta?: string }).delta, "pong");
+assert.deepEqual(streamEventToNotification({
+  type: "agent:event",
+  provider: "claude",
+  sessionId: "c1",
+  runId: "r1",
+  event: "assistant_text",
+  itemId: "msg-1-0",
+  text: "pong.",
+  delta: false
+}, "claude"), {
+  method: "item/completed",
+  params: { provider: "claude", threadId: "c1", turnId: "r1", item: { id: "msg-1-0", type: "agentMessage", text: "pong." } }
+});
 assert.equal(streamEventToNotification({
   type: "agent:event",
   provider: "claude",
@@ -222,3 +235,5 @@ assert.equal(adapted!.turns[0].items[0].type, "userMessage");
 assert.equal(adapted!.turns[0].items[1].type, "agentMessage");
 
 console.log("session runtime settings tests passed");
+
+assert.equal(restoreProviderRuntimeSettings("codex", { reasoningEffort: "xhigh" }).reasoningEffort, "xhigh", "preserve explicit saved effort");
