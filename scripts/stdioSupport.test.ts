@@ -48,6 +48,21 @@ const withoutProxyUrl = codexChildEnvironment({ NODE_ENV: "test" });
 assert.equal(withoutProxyUrl.HTTP_PROXY, undefined);
 assert.equal(withoutProxyUrl.NO_PROXY, undefined);
 
+// Console secrets and server settings stay out of agent processes; proxies still apply.
+const agentEnvironment = codexChildEnvironment({
+  CODEX_WEB_PASSWORD: "secret",
+  CODEX_WEB_PROXY_URL: proxyUrl,
+  CODE_SERVER_HASHED_PASSWORD: "hash",
+  CODING_AGENT_CONSOLE_STATE_DIR: "/state",
+  NEXT_DIST_DIR: ".next-x",
+  PORT: "3032",
+  NODE_ENV: "production",
+  HOME: "/root",
+  CODEX_HOME: "/root/.codex"
+});
+assert.deepEqual(Object.keys(agentEnvironment).filter((name) => !/proxy/i.test(name)).sort(), ["CODEX_HOME", "HOME"]);
+assert.equal(agentEnvironment.HTTP_PROXY, proxyUrl);
+
 assert.equal(shouldProxyHost("chatgpt.com"), true);
 assert.equal(shouldProxyHost("wss.chatgpt.com:443"), true);
 assert.equal(shouldProxyHost("api2.cursor.sh"), true);

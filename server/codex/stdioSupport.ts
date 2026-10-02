@@ -15,6 +15,10 @@ const proxyVariables = [
 
 const defaultNoProxy = "localhost,127.0.0.1,::1";
 
+// The console's own settings and secrets must not reach agent shells: they leaked the
+// login password, and PORT/NODE_ENV changed how agents' own projects build and serve.
+const serverOnlyVariable = /^(CODEX_WEB_|CODE_SERVER_|CODING_AGENT_CONSOLE_|NEXT_)|^(PORT|NODE_ENV)$/;
+
 export function codexAppServerArgs(source: Record<string, string | undefined>) {
   const value = source.CODEX_WEB_AUTO_COMPACT_TOKEN_LIMIT?.trim() || "200000";
   const args = ["app-server", "--listen", "stdio://"];
@@ -27,6 +31,7 @@ export function codexAppServerArgs(source: Record<string, string | undefined>) {
 
 export function childProcessEnv(source: NodeJS.ProcessEnv = process.env) {
   const environment = { ...source };
+  for (const name of Object.keys(environment)) if (serverOnlyVariable.test(name)) delete environment[name];
   const injectUrl = source.CODEX_WEB_INJECT_PROXY_URL?.trim();
   const fallbackUrl = source.CODEX_WEB_PROXY_URL?.trim();
   const proxyUrl = injectUrl || fallbackUrl;
