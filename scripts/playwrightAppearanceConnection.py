@@ -8,7 +8,7 @@ import os
 import pathlib
 import time
 from urllib.parse import urlsplit
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 URL = os.environ.get("CODING_AGENT_CONSOLE_TEST_URL", "http://127.0.0.1:1818/codex_web_cursor/")
 FRONTEND = os.environ.get("CODING_AGENT_CONSOLE_FRONTEND_URL")
@@ -170,11 +170,11 @@ def main():
         page.locator('a.fleetSessionMain[href*="session=ui-b"]').first.click()
         page.wait_for_timeout(150)
         assert not prompt.evaluate("e=>e===document.activeElement"), "switching a phone session focused the keyboard"
-        assert prompt.input_value() == ""
+        expect(prompt).to_have_value("")
         page.go_back()
-        page.wait_for_timeout(150)
-        assert prompt.input_value() == "Preserve this 中文 draft"
-        assert prompt.evaluate("e=>e.selectionStart") == 3
+        # The draft and then its caret are restored asynchronously; poll instead of a fixed sleep.
+        expect(prompt).to_have_value("Preserve this 中文 draft")
+        page.wait_for_function("e => e.selectionStart === 3", arg=prompt.element_handle(), timeout=3000)
         assert page.locator(".attachmentChip").count() == 1
         page.reload(wait_until="networkidle")
         page.locator(".turnPanel").first.wait_for()
