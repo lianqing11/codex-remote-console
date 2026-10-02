@@ -8,6 +8,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { allowLoginAttempt, clearSessionCookie, isAuthenticated, authEnabled, requireProductionAuth, setSessionCookie, validateLogin } from "./auth";
 import { createCodexGateway } from "./codexGateway";
 import { enrichCodexThreadRuntime } from "./codex/threadRuntime";
+import { clipCodexHistory } from "./historyOutput";
 import { requestWithWarmPool, WarmThreadPool } from "./codex/warmThreadPool";
 import { AgentQueue, AgentQueueStore, type AgentQueueItem } from "./agentQueue";
 import { ClaudeProvider } from "./providers/claude";
@@ -344,7 +345,7 @@ async function codexRequest(method: string, params: unknown) {
     method,
     withCodexDefaults(method, params)
   );
-  return enrichCodexThreadRuntime(method, rawResult);
+  return enrichCodexThreadRuntime(method, clipCodexHistory(rawResult));
 }
 
 function withCodexDefaults(method: string, params: unknown) {

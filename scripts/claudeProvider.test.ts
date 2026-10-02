@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -10,6 +10,7 @@ import {
   projectSlug
 } from "../server/providers/claude";
 import type { AgentNormalizedEvent } from "../server/types";
+import { clipCodexHistory, clipOutput } from "../server/historyOutput";
 import {
   formatClaudeResetRelative,
   formatClaudeUsageLabel,
@@ -36,6 +37,18 @@ assert.deepEqual(parsed.turns[0].items.slice(1).map((item) => [item.type, item.t
 // Tool calls keep their input visible after the result arrives.
 assert.equal(parsed.turns[0].items[2].command, "ls");
 assert.equal(parsed.turns[0].items[2].output, "ok");
+
+// History keeps the head and tail of long tool output; live streaming is unaffected.
+const longOutput = `${"a".repeat(5_000)}${"z".repeat(5_000)}`;
+const clipped = clipOutput(longOutput);
+assert.ok(clipped.startsWith("a".repeat(3_000)) && clipped.endsWith("z".repeat(1_000)));
+assert.match(clipped, /6000 characters omitted from history/);
+assert.equal(clipOutput("short"), "short");
+const codexHistory = clipCodexHistory({ thread: { turns: [{ items: [{ type: "commandExecution", aggregatedOutput: longOutput, command: "x" }] }] } }) as {
+  thread: { turns: Array<{ items: Array<{ aggregatedOutput: string; command: string }> }> };
+};
+assert.equal(codexHistory.thread.turns[0].items[0].aggregatedOutput, clipped);
+assert.equal(codexHistory.thread.turns[0].items[0].command, "x");
 
 // Claude Code writes one JSONL row per content block; ids must match the live stream.
 const split = parseClaudeTranscript([
@@ -152,7 +165,7 @@ async function main() {
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 const logPath = process.env.CLAUDE_FAKE_LOG;
-if (logPath) fs.appendFileSync(logPath, JSON.stringify({ args, cwd: process.cwd(), claudeAiMcp: process.env.ENABLE_CLAUDEAI_MCP_SERVERS }) + "\\n");
+if (logPath) fs.appendFileSync(logPath, JSON.stringify({ args, cwd: process.cwd(), claudeAiMcp: process.env.ENABLE_CLAUDEAI_MCP_SERVERS, consolePassword: process.env.CODEX_WEB_PASSWORD }) + "\\n");
 if (args.includes("--version")) {
   console.log("2.1.0");
   process.exit(0);
@@ -184,7 +197,7 @@ process.exit(0);
     command: fake,
     configDir: config,
     stateDir: state,
-    env: { ...process.env, CLAUDE_FAKE_LOG: logPath }
+    env: { ...process.env, CLAUDE_FAKE_LOG: logPath, CODEX_WEB_PASSWORD: "console-secret" }
   });
 
   const snapshot = await provider.getSnapshot();
@@ -217,9 +230,10 @@ process.exit(0);
   const log = (await readFile(logPath, "utf8"))
     .split(/\r?\n/)
     .filter(Boolean)
-    .map((line) => JSON.parse(line) as { args: string[]; cwd: string; claudeAiMcp?: string });
+    .map((line) => JSON.parse(line) as { args: string[]; cwd: string; claudeAiMcp?: string; consolePassword?: string });
   const run = log.find((entry) => entry.args.includes("-p"));
   assert.ok(run);
+  assert.equal(run.consolePassword, undefined, "console secrets stay out of agent processes");
   assert.ok(run.args.includes("--session-id"));
   assert.ok(run.args.includes("--permission-mode"));
   assert.ok(run.args.includes("plan"));
@@ -269,6 +283,14 @@ process.exit(0);
   const read = await provider.handle("thread/read", { threadId: created.thread.id }) as unknown as { thread: { turns: Array<{ items: Array<{ type: string }> }> } };
   assert.equal(read.thread.turns.length, 1);
   assert.equal(read.thread.turns[0].items[0].type, "userMessage");
+  // Parsed transcripts are cached by mtime/size; an appended turn must still appear.
+  await appendFile(path.join(jsonlDir, `${created.thread.id}.jsonl`), `${JSON.stringify({
+    type: "user",
+    uuid: "turn-read-2",
+    message: { role: "user", content: "again" }
+  })}\n`);
+  const reread = await provider.handle("thread/read", { threadId: created.thread.id }) as unknown as { thread: { turns: unknown[] } };
+  assert.equal(reread.thread.turns.length, 2);
 
   const hanging = new ClaudeProvider({
     command: fake,

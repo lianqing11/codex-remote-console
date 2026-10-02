@@ -4,6 +4,7 @@ import { chmod, mkdir, readdir, readFile, rename, stat, writeFile } from "node:f
 import { homedir } from "node:os";
 import path from "node:path";
 import { childProcessEnv } from "../codex/stdioSupport";
+import { clipOutput } from "../historyOutput";
 import type {
   AgentModelSummary,
   AgentNormalizedEvent,
@@ -220,7 +221,7 @@ export function parseClaudeTranscript(raw: string): { turns: ClaudeTurn[]; cwd: 
         if (block.type !== "tool_result") continue;
         const toolId = String(block.tool_use_id || block.toolUseId || `${current.id}-tool`);
         const existing = current.items.find((item) => item.id === toolId);
-        const output = textOf(block.content || block);
+        const output = clipOutput(textOf(block.content || block));
         if (existing) Object.assign(existing, { status: "completed", output });
         else current.items.push({ id: toolId, type: "toolCall", tool: "tool", status: "completed", output });
       }
@@ -389,6 +390,8 @@ export class ClaudeProvider {
   private ready: Promise<void>;
   private versionCache: { value: string; diagnostic: string | null } | null = null;
   private lastRateLimit: unknown = null;
+  // Every session list re-reads all transcripts; reparse only files that changed.
+  private transcripts = new Map<string, { version: string; transcript: ReturnType<typeof parseClaudeTranscript> }>();
 
   constructor(options: ClaudeProviderOptions = {}) {
     this.command = options.command || "claude";
@@ -519,8 +522,14 @@ export class ClaudeProvider {
 
   private async readJsonl(cwd: string, id: string) {
     const filePath = this.jsonlPath(cwd, id);
-    const raw = await readFile(filePath, "utf8").catch(() => "");
-    return raw ? parseClaudeTranscript(raw) : { turns: [], cwd, preview: "", title: "", updatedAt: 0 };
+    const info = await stat(filePath).catch(() => null);
+    if (!info?.size) return { turns: [], cwd, preview: "", title: "", updatedAt: 0 };
+    const version = `${info.mtimeMs}:${info.size}`;
+    const cached = this.transcripts.get(filePath);
+    if (cached?.version === version) return cached.transcript;
+    const transcript = parseClaudeTranscript(await readFile(filePath, "utf8"));
+    this.transcripts.set(filePath, { version, transcript });
+    return transcript;
   }
 
   private asThread(overlay: ClaudeOverlay, transcript: Awaited<ReturnType<typeof parseClaudeTranscript>>) {
@@ -529,9 +538,10 @@ export class ClaudeProvider {
     // keyed by runId, instead of rendering the running turn twice.
     const run = this.runs.get(overlay.id);
     const last = transcript.turns.at(-1);
-    if (run && last && (last.startedAt || 0) >= run.startedAt) {
-      transcript.turns[transcript.turns.length - 1] = { ...last, id: run.runId, status: "inProgress", completedAt: null };
-    }
+    // Transcripts are cached and shared, so build a new turn list instead of editing it.
+    const turns = run && last && (last.startedAt || 0) >= run.startedAt
+      ? [...transcript.turns.slice(0, -1), { ...last, id: run.runId, status: "inProgress", completedAt: null }]
+      : transcript.turns;
     return {
       thread: {
         id: overlay.id,
@@ -549,7 +559,7 @@ export class ClaudeProvider {
         mode: overlay.mode,
         status: this.runs.has(overlay.id) ? "running" : "idle",
         runtime: { model: overlay.model, mode: overlay.mode, reasoningEffort: overlay.effort, serviceTier: null },
-        turns: transcript.turns
+        turns
       }
     };
   }
