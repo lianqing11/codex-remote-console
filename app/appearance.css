@@ -40,10 +40,6 @@ html[data-theme="dark"] { --on-accent: #101720; }
 .usageDetailsControl > div { cursor: pointer; }
 .appearanceButton { width: 36px; height: 36px; padding: 0; display: grid; place-items: center; }
 .topbar .topActions .mobileToolsButton, .bottomTabBar .mobileMinimalOnly { display: none; }
-.turnList { padding: 20px; }
-.turnPanel { width: 100%; max-width: 960px; margin-inline: auto; border-radius: var(--r-md); box-shadow: none; }
-.turnPanel > summary { padding: 10px 14px; }
-.turnBody { padding: 16px; }
 .message pre, .markdownBody { font-size: 14px; line-height: 1.7; }
 .markdownBody > :first-child { margin-top: 0; }
 .markdownBody pre, .markdownBody table { max-width: 100%; overflow-x: auto; }
@@ -95,8 +91,6 @@ html[data-theme="dark"] { --on-accent: #101720; }
   .topbar { grid-template-columns: minmax(0, 1fr) auto; }
   .topbarTitleText { flex: 1; }
   .topbar .topbarTitleText { overflow: clip; }
-  .turnList { padding: 12px 8px; }
-  .turnBody { padding: 12px; }
   .message pre, .markdownBody { font-size: 16px; line-height: 1.65; }
   .markdownBody code { font-size: 13px; }
   .composer { padding: 8px; }
