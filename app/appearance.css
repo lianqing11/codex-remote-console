@@ -37,6 +37,8 @@ html[data-theme="dark"] { --on-accent: #101720; }
 .topbarMeta .topbarPath:hover { color: var(--accent-strong); }
 .runtimeQuickButton { border: 0; border-radius: var(--r-sm); background: var(--surface-hover); padding: 5px 8px; }
 .usageDetailsControl { padding: 0; border: 0; background: transparent; border-radius: var(--r-md); }
+/* Size to the pill; the generic 38px icon-button rule would let it spill under its neighbours. */
+.topActions > .usageDetailsControl { width: auto; height: auto; flex: 0 0 auto; }
 .usageDetailsControl > div { cursor: pointer; }
 .appearanceButton { width: 36px; height: 36px; padding: 0; display: grid; place-items: center; }
 .topbar .topActions .mobileToolsButton, .bottomTabBar .mobileMinimalOnly { display: none; }
