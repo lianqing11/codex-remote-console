@@ -152,6 +152,7 @@ import {
   nowSeconds,
   providerFromThreadKey,
   providerOf,
+  sessionPhaseClaimsRunning,
   statusLabel,
   threadIsActive,
   threadKey,
@@ -1372,6 +1373,9 @@ export default function Home() {
   /** Thread keys currently resident in Codex app-server memory (warm / skip cold resume). */
   const warmThreadIdsRef = useRef<Set<string>>(new Set());
   const dismissedThreadIdsRef = useRef<Set<string>>(new Set());
+  /** updatedAt of the history last loaded per thread, and of the latest list row. */
+  const loadedHistoryAtRef = useRef<Map<string, number>>(new Map());
+  const listedThreadsRef = useRef<Map<string, { updatedAt: number; running: boolean }>>(new Map());
   const composerRef = useRef<ComposerHandle | null>(null);
   const draftsRef = useRef<Record<string, string>>({});
   const mentionLoadGen = useRef(0);
@@ -1904,6 +1908,7 @@ export default function Home() {
     if (!refreshed?.id) return;
 
     setSelectedThread(refreshed);
+    loadedHistoryAtRef.current.set(threadId, refreshed.updatedAt || 0);
     const queueTurnId = activeQueueTurns(queueSnapshotRef.current).get(threadId) || null;
     updateActiveTurn(threadId, queueTurnId || activeTurnIdFromTurns(refreshed.turns || []));
     setThreads((current) => patchListedThread(current, refreshed, threadId));
@@ -1921,6 +1926,9 @@ export default function Home() {
       const response = await agent(provider, "thread/list", { limit: 50, sortDirection: "desc", provider });
       if (revision !== threadListRequestSeq.current || connection !== connectionGeneration.current) return;
       const next = normalizeThreads(response.data || []).filter(thread => !dismissedThreadIdsRef.current.has(threadKey(thread)));
+      for (const thread of next) {
+        listedThreadsRef.current.set(threadKey(thread), { updatedAt: thread.updatedAt || 0, running: sessionPhaseClaimsRunning(statusLabel(thread.status)) });
+      }
       const snapshots = next.map(thread => ({ key: threadKey(thread), statusLabel: statusLabel(thread.status) }));
       // Only reconcile the provider which replied; slow providers keep their state.
       setActiveTurnIdsByThread(current => {
@@ -2113,8 +2121,9 @@ export default function Home() {
         const diffItem: ThreadItem = {
           id: itemId,
           type: "diff",
-          text: item.diff.diff,
+          text: item.diff.diff || "",
           projectDiff: item.diff,
+          queueItemId: item.id,
           title: "Code changes in this turn"
         };
         setItemsForThread(item.threadKey, (current) => current[itemId] ? current : { ...current, [itemId]: diffItem });
@@ -2151,11 +2160,23 @@ export default function Home() {
       const snapshot = await call({ type: "queue:list" }) as QueueSnapshot;
       if (revision === sessionRefreshRequestSeq.current && connection === connectionGeneration.current && snapshot) applyQueueSnapshot(snapshot);
     })();
+    const threadsRefresh = loadThreads();
+    // After a reconnect, re-read history only if the session ran or changed while offline;
+    // full histories are hundreds of KB on a mobile link.
+    const selectedChanged = async () => {
+      if (reason !== "reconnect" || !selectedKey) return true;
+      await threadsRefresh;
+      const listed = listedThreadsRef.current.get(selectedKey);
+      const loadedAt = loadedHistoryAtRef.current.get(selectedKey);
+      return !listed?.updatedAt || !loadedAt || listed.running || listed.updatedAt > loadedAt;
+    };
     const selectedRefresh = selectedKey
-      ? refreshSelectedThread(selectedKey).then(() => {
+      ? selectedChanged().then(async changed => {
+          if (!changed) return;
+          await refreshSelectedThread(selectedKey);
           if (connection === connectionGeneration.current && selectedThreadIdRef.current === selectedKey) recordConnectionMetric("session restore", selectedStarted);
         }) : Promise.resolve();
-    const promise = Promise.allSettled([loadThreads(), queueRefresh, selectedRefresh]).then(results => {
+    const promise = Promise.allSettled([threadsRefresh, queueRefresh, selectedRefresh]).then(results => {
       if (revision !== sessionRefreshRequestSeq.current || connection !== connectionGeneration.current) return;
       const error = results.find(result => result.status === "rejected");
       if (error?.status === "rejected") throw error.reason;
@@ -3316,7 +3337,10 @@ export default function Home() {
       }));
       reconcileModeOverrides([resumed]);
       setPendingPromptForThread(key, "");
-      if (turnsHaveItems(resumed.turns)) applyItemsFromTurns(key, resumed.turns);
+      if (turnsHaveItems(resumed.turns)) {
+        applyItemsFromTurns(key, resumed.turns);
+        loadedHistoryAtRef.current.set(key, resumed.updatedAt || 0);
+      }
       setHistoryLoadingThreadId((current) => (current === key ? null : current));
     } catch (error) {
       setHistoryLoadingThreadId((current) => (current === key ? null : current));

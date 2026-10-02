@@ -519,6 +519,17 @@ async function handleApi(req: IncomingMessage, res: ServerResponse) {
     return true;
   }
 
+  if (route === "/api/queue/diff" && req.method === "GET") {
+    if (!isAuthenticated(req)) {
+      sendError(res, 401, "Authentication required.");
+      return true;
+    }
+    const diff = agentQueue.diff(url.searchParams.get("id") || "");
+    if (diff) sendJson(res, 200, diff);
+    else sendError(res, 404, "Queue diff not found.");
+    return true;
+  }
+
   if (route === "/api/uploads" && req.method === "POST") {
     if (!isAuthenticated(req)) {
       sendError(res, 401, "Unauthorized.");

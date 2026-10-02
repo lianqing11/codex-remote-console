@@ -172,7 +172,6 @@ await withQueue(async ({ queue, starts }) => {
 }
 
 await withQueue(async ({ store, databasePath }) => {
-  // Snapshots carry stored diffs to every browser on every queue change.
   store.enqueue(item("queued-big-diff", "thread-big-diff", 1));
   store.setDiff("queued-big-diff", {
     root: "/tmp",
@@ -187,6 +186,9 @@ await withQueue(async ({ store, databasePath }) => {
   const stored = store.get("queued-big-diff")?.diff;
   assert.equal(stored?.truncated, true);
   assert.ok(stored!.diff.length <= 512 * 1024 && stored!.diff.endsWith("+"));
+  // Snapshots go to every browser on every queue change, so they omit patch text.
+  const listed = store.snapshot().items.find((queued) => queued.id === "queued-big-diff")?.diff;
+  assert.deepEqual([listed?.diff, listed?.hasChanges, listed?.additions], ["", true, 10_000]);
 
   // Stale finished items are pruned as new work arrives, not only at startup.
   store.setStatus("queued-big-diff", "completed");

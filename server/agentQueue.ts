@@ -75,8 +75,7 @@ function rowToItem(row: QueueRow): AgentQueueItem {
   };
 }
 
-// Every queue change re-sends the whole snapshot, stored diffs included, to every
-// browser. Cap the patch text so one huge turn cannot slow every later update.
+// Cap stored patch text so opening one huge turn's changes stays cheap.
 const maxStoredDiffChars = 512 * 1024;
 
 function storedDiffJson(diff: GitDiffResult) {
@@ -159,7 +158,9 @@ export class AgentQueueStore {
   snapshot(): AgentQueueSnapshot {
     const rows = this.db.prepare("SELECT * FROM queue_items ORDER BY created_at ASC, id ASC LIMIT 500").all() as QueueRow[];
     const threads = this.db.prepare("SELECT * FROM queue_threads ORDER BY thread_key ASC").all() as ThreadRow[];
-    return { items: rows.map(rowToItem), threads: threads.map(rowToThread) };
+    // Browsers receive this on every queue change; patch text is fetched on demand via get().
+    const items = rows.map(rowToItem).map((item) => item.diff ? { ...item, diff: { ...item.diff, diff: "" } } : item);
+    return { items, threads: threads.map(rowToThread) };
   }
 
   enqueue(input: AgentQueueEnqueueInput) {
@@ -378,6 +379,10 @@ export class AgentQueue {
 
   snapshot() {
     return this.store.snapshot();
+  }
+
+  diff(id: string) {
+    return this.store.get(id)?.diff ?? null;
   }
 
   enqueue(input: AgentQueueEnqueueInput) {

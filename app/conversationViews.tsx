@@ -4,6 +4,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, ChevronRight, Copy, FileDiff, FileText, ListTree, Terminal } from "lucide-react";
 import dynamic from "next/dynamic";
 import SafeMarkdown from "./SafeMarkdown";
+import { getJson } from "./apiClient";
 import { AGENT_PROVIDER_LABELS, type ProviderId } from "./sessionRuntime";
 import { uploadedImagePreviewFromPath } from "./uploads";
 import {
@@ -446,7 +447,11 @@ function TurnWorkLog({
 function TurnCodeChanges({ items }: { items: ThreadItem[] }) {
   const [open, setOpen] = useState(false);
   const [selectedId, setSelectedId] = useState(items[0]?.id || "");
+  const [loadedDiffs, setLoadedDiffs] = useState<Record<string, ProjectDiff>>({});
   const selected = items.find((item) => item.id === selectedId) || items[0];
+  const selectedProjectDiff = selected ? loadedDiffs[selected.id] || projectDiffFromItem(selected) : null;
+  const queueItemId = typeof selected?.queueItemId === "string" ? selected.queueItemId : "";
+  const patchId = open && queueItemId && selectedProjectDiff?.hasChanges && !selectedProjectDiff.diff ? selected.id : "";
 
   useEffect(() => {
     if (!items.length) {
@@ -455,6 +460,13 @@ function TurnCodeChanges({ items }: { items: ThreadItem[] }) {
     }
     if (!items.some((item) => item.id === selectedId)) setSelectedId(items[0].id);
   }, [items, selectedId]);
+
+  useEffect(() => {
+    if (!patchId) return;
+    // Queue snapshots omit patch text; fetch it only when this panel is opened.
+    void getJson<ProjectDiff>(`/api/queue/diff?id=${encodeURIComponent(queueItemId)}`)
+      .then((diff) => setLoadedDiffs((current) => ({ ...current, [patchId]: diff })));
+  }, [patchId, queueItemId]);
 
   if (!items.length || !selected) return null;
 
@@ -469,8 +481,6 @@ function TurnCodeChanges({ items }: { items: ThreadItem[] }) {
     },
     { files: 0, additions: 0, deletions: 0, statuses: new Set<string>() }
   );
-  const selectedProjectDiff = projectDiffFromItem(selected);
-
   return (
     <section className={`turnCodeChanges ${open ? "expanded" : ""}`}>
       <button
