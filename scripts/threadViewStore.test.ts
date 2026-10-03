@@ -5,6 +5,7 @@ import {
   getThreadViewState,
   latestPlanPayloadFor,
   registerTurnItem,
+  reconcileQueueTurnIdentities,
   setItemOrderForThread,
   setItemsForThread,
   setPendingPromptForThread,
@@ -15,6 +16,72 @@ import {
   threadViewHasConversationHistory
 } from "../app/threadViewStore";
 import type { ThreadItem } from "../app/threadModel";
+import type { QueuedPrompt } from "../app/queueModel";
+import { canonicalClaudeTurns } from "../app/claudeTurnIdentity";
+
+// Real Claude transcripts use a user UUID, while queue diffs use a run UUID.
+for (const queueFirst of [true, false]) {
+  const key = `claude:turn-identity-${queueFirst}`;
+  const queue = [1, 2].map((n) => ({
+    id: `queue-${n}`, provider: "claude", threadKey: key, runId: `run-${n}`,
+    text: "Continue", status: "completed", createdAt: n * 100, updatedAt: n * 100 + 30,
+    timings: { startRequestedAt: n * 100_000 + 100, completedAt: n * 100_000 + 30_000 }
+  } as QueuedPrompt));
+  const history = [1, 2].map((n) => ({
+    id: `native-${n}`, startedAt: n * 100 + 2, status: "completed", items: [
+      { id: `user-${n}`, type: "userMessage", content: [{ type: "text", text: "Continue" }] },
+      { id: `answer-${n}`, type: "agentMessage", text: `Answer ${n}` }
+    ]
+  }));
+  function snapshot() {
+    reconcileQueueTurnIdentities(queue);
+    for (const n of [1, 2]) {
+      const id = `run-${n}-diff`;
+      setItemsForThread(key, (items) => ({ ...items, [id]: { id, type: "diff", text: `patch ${n}` } }));
+      setItemOrderForThread(key, (ids) => ids.includes(id) ? ids : [...ids, id]);
+      registerTurnItem(key, `run-${n}`, id);
+    }
+  }
+  if (queueFirst) snapshot();
+  applyItemsFromTurns(key, history);
+  if (!queueFirst) snapshot();
+  // Repeated reconnect/snapshot hydration must not accumulate synthetic turns.
+  for (let i = 0; i < 3; i += 1) {
+    snapshot();
+    applyItemsFromTurns(key, history);
+  }
+  const state = getThreadViewState();
+  assert.deepEqual(state.turnOrderByThread[key], ["run-1", "run-2"]);
+  for (const n of [1, 2]) {
+    assert.deepEqual(state.turnsByThread[key][`run-${n}`].itemIds, [`user-${n}`, `answer-${n}`, `run-${n}-diff`]);
+  }
+  assert.equal(history[0].id, "native-1", "do not mutate provider history");
+  assert.equal(canonicalClaudeTurns([{ ...history[0], startedAt: 50 }], queue)[0].id, "native-1", "same text outside execution is not a match");
+  assert.equal(canonicalClaudeTurns([{ ...history[0], startedAt: null }], queue)[0].id, "native-1", "missing timing cannot prove identity");
+  assert.equal(canonicalClaudeTurns([history[0]], [queue[0], { ...queue[0], runId: "retry" }])[0].id, "native-1", "ambiguous runs stay separate");
+  assert.deepEqual(canonicalClaudeTurns([history[0], { ...history[0], id: "compacted" }], queue).map((turn) => turn.id), ["native-1", "compacted"], "one run cannot swallow multiple native turns");
+  discardThreadView(key);
+  applyItemsFromTurns(key, history);
+  assert.deepEqual(getThreadViewState().turnOrderByThread[key], ["run-1", "run-2"], "reopening keeps the queue identity");
+  discardThreadView(key);
+}
+
+const liveClaude = "claude:live-prompt";
+setItemsForThread(liveClaude, { reply: { id: "reply", type: "agentMessage", text: "Working" } });
+setItemOrderForThread(liveClaude, ["reply"]);
+registerTurnItem(liveClaude, "live-run", "reply");
+const liveQueue = { provider: "claude", threadKey: liveClaude, runId: "live-run", text: "Fix the bug",
+  status: "running", createdAt: 100, updatedAt: 105 } as QueuedPrompt;
+reconcileQueueTurnIdentities([liveQueue]);
+assert.equal(threadHasLandedUserPrompt(liveClaude, "Fix the bug", "live-run"), true, "live Claude events omit the user prompt");
+assert.deepEqual(getThreadViewState().itemOrderByThread[liveClaude], ["live-run-queue-user", "reply"]);
+reconcileQueueTurnIdentities([{ ...liveQueue, status: "completed", updatedAt: 130 }]);
+applyItemsFromTurns(liveClaude, [{ id: "native-user", startedAt: 102, status: "completed", items: [
+  { id: "native-user-message", type: "userMessage", content: [{ type: "text", text: "Fix the bug" }] },
+  { id: "reply", type: "agentMessage", text: "Done" }
+] }]);
+assert.deepEqual(getThreadViewState().itemOrderByThread[liveClaude], ["native-user-message", "reply"], "history replaces the temporary prompt without duplication");
+discardThreadView(liveClaude);
 
 const threadKey = "codex:history-after-diff";
 const turnId = "turn-1";

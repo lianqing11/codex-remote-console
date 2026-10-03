@@ -172,6 +172,7 @@ import {
   latestPlanTextFor,
   registerTurnItem,
   reconcileQueuePendingPrompt,
+  reconcileQueueTurnIdentities,
   setItemOrderForThread,
   setItemsForThread,
   setPendingPromptForThread,
@@ -1477,10 +1478,12 @@ export default function Home() {
 
   const sessionModel = runtimeSettings.model;
   const activeTurnId = selectedThread ? activeTurnIdsByThread[threadKey(selectedThread)] || null : null;
+  // Show what the next turn will use: a model or Fast change applies at once, not after the
+  // thread next reports its runtime. The thread's own runtime only fills settings never chosen.
   const displayedThreadRuntime = selectedThread?.runtime || null;
-  const displayedModel = displayedThreadRuntime?.model || sessionModel;
-  const displayedReasoning = displayedThreadRuntime?.reasoningEffort ?? runtimeSettings.reasoningEffort;
-  const displayedServiceTier = displayedThreadRuntime?.serviceTier || runtimeSettings.serviceTier || "default";
+  const displayedModel = sessionModel || displayedThreadRuntime?.model || "";
+  const displayedReasoning = runtimeSettings.reasoningEffort ?? displayedThreadRuntime?.reasoningEffort ?? null;
+  const displayedServiceTier = runtimeSettings.serviceTier || displayedThreadRuntime?.serviceTier || "default";
   const displayedFastMode = isFastServiceTier(displayedServiceTier);
   const latestPlanText = latestPlanTextFor(currentThreadKey);
   const queueSummaryByThread = useMemo(() => queueSummariesByThread(queueSnapshot), [queueSnapshot]);
@@ -1564,6 +1567,9 @@ export default function Home() {
       const key = threadKey(thread);
       const queue = queueSummaryByThread.get(key) || queueThreadSummary(queueSnapshot, key);
       const provider = providerOf(thread);
+      const runtime = key === currentThreadKey
+        ? { model: displayedModel, reasoningEffort: displayedReasoning, serviceTier: displayedServiceTier }
+        : { ...thread.runtime, serviceTier: thread.runtime ? thread.runtime.serviceTier || "default" : null };
       const execution = deriveSessionExecutionState({
         thread,
         provider,
@@ -1585,15 +1591,15 @@ export default function Home() {
         directory: directoryLabel(thread.cwd),
         updatedAt: thread.updatedAt || 0,
         statusLabel: statusLabel(thread.status),
-        model: thread.runtime?.model,
-        reasoningEffort: thread.runtime?.reasoningEffort,
-        serviceTier: thread.runtime ? thread.runtime.serviceTier || "default" : null,
+        model: runtime.model,
+        reasoningEffort: runtime.reasoningEffort,
+        serviceTier: runtime.serviceTier,
         mode: execution.mode,
         queueCount: queue?.items.length || 0,
         queuePaused: Boolean(queue?.threadState?.paused)
       };
     }),
-    [activeTurnIdsByThread, modeOverrideByThread, orderedThreads, queueSnapshot, queueSummaryByThread, runtimeSettingsByProvider, waitingThreadIds, forkBusy, bootstrap, wsState]
+    [activeTurnIdsByThread, modeOverrideByThread, orderedThreads, queueSnapshot, queueSummaryByThread, runtimeSettingsByProvider, waitingThreadIds, forkBusy, bootstrap, wsState, currentThreadKey, displayedModel, displayedReasoning, displayedServiceTier]
   );
   const fleetRequests = useMemo<FleetRequestSource[]>(
     () => pendingRequests.map((request) => {
@@ -2040,6 +2046,7 @@ export default function Home() {
       if (!snapshot || !Array.isArray(snapshot.items) || !Array.isArray(snapshot.threads)) return;
       queueSnapshotRef.current = snapshot;
       setQueueSnapshot(snapshot);
+      reconcileQueueTurnIdentities(snapshot.items);
 
       const activeByThread = new Map<string, QueuedPrompt>();
       const queuedByThread = new Map<string, QueuedPrompt>();

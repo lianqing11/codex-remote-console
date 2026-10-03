@@ -37,6 +37,7 @@ const progress = { id: crypto.randomUUID(), content: [{ type: 'text', text: 'Ins
 row({ type: 'assistant', message: progress });
 send({ type: 'assistant', message: progress });
 setTimeout(() => {
+  if (permission !== 'plan') fs.writeFileSync(path.join(process.cwd(), 'fixture.txt'), 'implemented\n');
   const text = permission === 'plan' ? '1. Update the fixture.\n2. Run verification.\nCLAUDE_PLAN_READY' : 'CLAUDE_PLAN_EXECUTED';
   const message = { id: crypto.randomUUID(), content: [{ type: 'text', text }] };
   row({ type: 'assistant', message });
@@ -65,6 +66,10 @@ def main():
     workspace = root / 'workspace'
     workspace.mkdir()
     subprocess.run(['git', 'init', '-q', str(workspace)], check=True)
+    (workspace / 'fixture.txt').write_text('initial\n')
+    subprocess.run(['git', '-C', str(workspace), 'add', 'fixture.txt'], check=True)
+    subprocess.run(['git', '-C', str(workspace), '-c', 'user.name=Fixture', '-c',
+                    'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture'], check=True)
     bins = root / 'bin'
     bins.mkdir()
     for name, source in [('claude', FAKE_CLAUDE), ('codex', FAKE_CODEX),
@@ -137,6 +142,8 @@ def main():
                 if not new_claude.is_visible():
                     page.get_by_role('button', name='Sessions', exact=True).click()
                 new_claude.click()
+                # Each viewport needs a fresh change for its execution diff.
+                (workspace / 'fixture.txt').write_text('initial\n')
                 page.locator('.sessionModeSwitch').get_by_role('button', name='Plan', exact=True).click()
                 page.locator('.composer textarea').fill('Plan a small fixture change without modifying files.')
                 page.locator('.composer .primaryButton').click()
@@ -158,11 +165,17 @@ def main():
                 expect(control).to_have_attribute('data-execution-phase', 'idle', timeout=20000)
                 expect(control).to_have_attribute('data-session-key', session_key)
                 expect(page.locator('.turnFinalAnswer').filter(has_text='CLAUDE_PLAN_EXECUTED')).to_have_count(1, timeout=20000)
+                expect(page.locator('.turnCodeChanges')).to_have_count(1, timeout=20000)
+                expect(page.locator('.turnPanel')).to_have_count(2)
+                expect(page.locator('.turnSummaryMain > strong').filter(has_text='Agent turn')).to_have_count(0)
                 expect(execute).to_have_count(0)
                 page.reload(wait_until='networkidle')
                 expect(control).to_have_attribute('data-execution-mode', 'default', timeout=20000)
                 expect(control).to_have_attribute('data-session-key', session_key)
                 expect(execute).to_have_count(0)
+                expect(page.locator('.turnPanel')).to_have_count(2)
+                expect(page.locator('.turnCodeChanges')).to_have_count(1)
+                expect(page.locator('.turnSummaryMain > strong').filter(has_text='Agent turn')).to_have_count(0)
                 assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), 'horizontal overflow'
                 calls = [json.loads(line) for line in invocations.read_text().splitlines()]
                 own_calls = [call for call in calls if 'claude:' + call['id'] == session_key]
@@ -174,7 +187,8 @@ def main():
                 assert queued == [('completed',), ('completed',)], queued
                 assert not errors, errors
                 page.screenshot(path=str(root / f'{label}-agent-complete.png'), full_page=True)
-                results.append({'viewport': label, 'same_session': True, 'invocations': 2, 'errors': 0})
+                results.append({'viewport': label, 'same_session': True, 'invocations': 2,
+                                'turns': 2, 'diffs': 1, 'phantom_turns': 0, 'errors': 0})
                 context.close()
             browser.close()
         (root / 'results.json').write_text(json.dumps(results, indent=2) + '\n')

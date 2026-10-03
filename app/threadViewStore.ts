@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from "react";
-import { assistantMessagePhase, partitionTurnItems, statusLabel, uniqueAppend, uniqueItems, userItemMatchesPrompt, type ThreadItem, type Turn, type TurnGroup } from "./threadModel";
+import { canonicalClaudeTurns, type ClaudeQueuedTurn } from "./claudeTurnIdentity";
+import type { QueuedPrompt } from "./queueModel";
+import { assistantMessagePhase, isUserMessageItem, partitionTurnItems, statusLabel, uniqueAppend, uniqueItems, userItemMatchesPrompt, type ThreadItem, type Turn, type TurnGroup } from "./threadModel";
 
 export const EMPTY_ITEMS: Record<string, ThreadItem> = Object.freeze({}) as Record<string, ThreadItem>;
 export const EMPTY_TURNS: Record<string, TurnGroup> = Object.freeze({}) as Record<string, TurnGroup>;
@@ -23,6 +25,54 @@ let state: ThreadViewState = {
 
 const listeners = new Set<() => void>();
 const threadListeners = new Map<string, Set<() => void>>();
+const claudeQueueTurns = new Map<string, ClaudeQueuedTurn[]>();
+
+/** Queue and history arrive independently on reconnect; reconcile either order. */
+export function reconcileQueueTurnIdentities(items: QueuedPrompt[]) {
+  const byThread = new Map<string, ClaudeQueuedTurn[]>();
+  for (const item of items) {
+    if (item.provider !== "claude" || !item.runId) continue;
+    const runs = byThread.get(item.threadKey) || [];
+    runs.push({ runId: item.runId, text: item.text, createdAt: item.createdAt,
+      updatedAt: item.updatedAt, status: item.status, timings: item.timings });
+    byThread.set(item.threadKey, runs);
+  }
+  for (const [threadId, runs] of byThread) {
+    if (JSON.stringify(claudeQueueTurns.get(threadId)) === JSON.stringify(runs)) continue;
+    claudeQueueTurns.set(threadId, runs);
+    const stored = state.turnsByThread[threadId] || EMPTY_TURNS;
+    const messages = state.itemsByThread[threadId] || EMPTY_ITEMS;
+    const turns = (state.turnOrderByThread[threadId] || []).map((id) => ({
+      ...stored[id], id, status: stored[id]?.status,
+      items: (stored[id]?.itemIds || []).map((itemId) => messages[itemId]).filter(Boolean)
+    })).filter((turn) => turn.items.some((item) => item.type !== "diff"));
+    if (turns.length) applyItemsFromTurns(threadId, turns);
+    // Claude streams assistant/tool blocks only. Restore the accepted prompt for
+    // live turns, then let authoritative history replace this temporary item.
+    for (const run of runs) {
+      if (!run.runId || !run.text.trim()) continue;
+      const turn = state.turnsByThread[threadId]?.[run.runId];
+      if (!turn) continue;
+      const items = state.itemsByThread[threadId] || EMPTY_ITEMS;
+      if (turn.itemIds.some((id) => items[id] && isUserMessageItem(items[id]))) continue;
+      if (!turn.itemIds.some((id) => items[id] && items[id].type !== "diff")
+        && !["running", "waiting_for_input"].includes(run.status)) continue;
+      const id = `${run.runId}-queue-user`;
+      setItemsForThread(threadId, (current) => ({ ...current,
+        [id]: { id, type: "userMessage", content: [{ type: "text", text: run.text }] }
+      }));
+      setItemOrderForThread(threadId, (order) => {
+        const first = order.findIndex((itemId) => turn.itemIds.includes(itemId));
+        const next = order.filter((itemId) => itemId !== id);
+        next.splice(first < 0 ? next.length : first, 0, id);
+        return next;
+      });
+      setTurnsForThread(threadId, (current) => ({ ...current,
+        [run.runId!]: { ...turn, itemIds: [id, ...turn.itemIds.filter((itemId) => itemId !== id)] }
+      }));
+    }
+  }
+}
 
 function emitAll() {
   for (const listener of listeners) listener();
@@ -167,6 +217,8 @@ export function discardThreadView(threadId: string) {
 }
 
 export function applyItemsFromTurns(threadId: string, turns: Turn[]) {
+  const canonicalTurns = threadId.startsWith("claude:")
+    ? canonicalClaudeTurns(turns, claudeQueueTurns.get(threadId) || []) : turns;
   const currentItems = state.itemsByThread[threadId] || EMPTY_ITEMS;
   const currentTurns = state.turnsByThread[threadId] || EMPTY_TURNS;
   const currentTurnOrder = state.turnOrderByThread[threadId] || EMPTY_ORDER;
@@ -185,7 +237,7 @@ export function applyItemsFromTurns(threadId: string, turns: Turn[]) {
     }
   }
 
-  for (const turn of turns) {
+  for (const [index, turn] of canonicalTurns.entries()) {
     const itemIds: string[] = [];
     for (const item of turn.items || []) {
       nextItems[item.id] = item;
@@ -193,6 +245,7 @@ export function applyItemsFromTurns(threadId: string, turns: Turn[]) {
       itemIds.push(item.id);
     }
     appendPreservedDiffs(turn.id, itemIds);
+    if (turn.id !== turns[index].id) appendPreservedDiffs(turns[index].id, itemIds);
     nextTurns[turn.id] = {
       id: turn.id,
       itemIds: uniqueItems(itemIds),
