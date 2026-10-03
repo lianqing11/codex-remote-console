@@ -8,6 +8,7 @@ export type CodexThreadRuntime = {
   reasoningEffort: string | null;
   serviceTier: string | null;
   mode: string | null;
+  forkSettings?: Record<string, unknown>;
 };
 
 type CacheEntry = {
@@ -52,6 +53,20 @@ function runtimeFromSettings(value: unknown): CodexThreadRuntime | null {
     mode: optionalString(collaborationMode?.mode)
   } satisfies CodexThreadRuntime;
 
+  const sandboxPolicy = record(settings.sandbox_policy);
+  const sandbox = optionalString(sandboxPolicy?.type);
+  const forkSettings: Record<string, unknown> = {};
+  if (settings.approval_policy) forkSettings.approvalPolicy = settings.approval_policy;
+  if (settings.cwd) forkSettings.cwd = settings.cwd;
+  if (settings.model_provider_id) forkSettings.modelProvider = settings.model_provider_id;
+  if (sandbox && ["read-only", "workspace-write", "danger-full-access"].includes(sandbox)) {
+    forkSettings.sandbox = sandbox;
+    if (sandbox === "workspace-write") {
+      const { type: _type, ...options } = sandboxPolicy!;
+      forkSettings.config = { sandbox_workspace_write: options };
+    }
+  }
+  if (Object.keys(forkSettings).length) (runtime as CodexThreadRuntime).forkSettings = forkSettings;
   return runtime.model || runtime.reasoningEffort || runtime.serviceTier || runtime.mode ? runtime : null;
 }
 
@@ -131,6 +146,7 @@ export async function readCodexThreadRuntime(
       else turnContextFallback ||= candidate;
     }
     runtime ||= turnContextFallback;
+    if (runtime && turnContextFallback?.forkSettings) runtime.forkSettings = { ...turnContextFallback.forkSettings, ...runtime.forkSettings };
   } finally {
     await handle.close();
   }

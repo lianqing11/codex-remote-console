@@ -7040,7 +7040,8 @@ html[data-keyboard-open="true"] .composer {
 .runProgress p { margin: 6px 0; }
 .emptyDirectoryButton { display: grid; gap: 6px; width: min(420px, 100%); min-height: 58px; margin: 14px auto 0; padding: 12px 16px; text-align: left; }
 .emptyDirectoryButton span { font-size: var(--fs-sm); color: var(--muted); }
-.emptyDirectoryButton strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.emptyDirectoryButton :is(strong, small) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.emptyDirectoryButton small { color: var(--muted); font-size: var(--fs-xs); }
 .emptyStateDetails { min-height: 44px; padding: 8px 12px; }
 .contextActions { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
 .contextActions h3 { font-size: var(--fs-base); margin: 0; }
@@ -7067,3 +7068,17 @@ html[data-keyboard-open="true"] .composer {
   .topbar { grid-template-columns: minmax(0, 1fr) 40px; }
   .topbar .topActions .quotaDetailsButton { display: none; }
 }
+/* Sized like the status pills beside it so the turn header reads as one row of chips. */
+.turnSummaryMeta .forkTurnButton { display: inline-flex; align-items: center; gap: 4px; min-height: 0; padding: 4px 8px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); font-size: inherit; line-height: inherit; }
+.turnSummaryMeta .forkTurnButton:hover { border-color: var(--a200); color: var(--accent-strong); }
+.turnSummaryMeta .forkTurnButton[aria-disabled="true"] { opacity: 0.5; }
+.forkParentLink { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 180px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.forkParentLink span { overflow: hidden; text-overflow: ellipsis; }
+.forkParentLink:hover { color: var(--accent-strong); }
+.forkSessionButton[aria-disabled="true"] { opacity: 0.45; }
+.forkSourceLink { grid-column: 1; grid-row: 2; justify-self: start; max-width: calc(100% - 28px); margin: 0 0 5px 28px; padding: 2px 0; border: 0; background: transparent; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.forkChildrenToggle { grid-column: 2; grid-row: 2; padding: 4px; font-size: 11px; }
+.fleetSessionRow > .fleetSessionMain { grid-column: 1; grid-row: 1; }
+.fleetSessionRow > .fleetRowMenu { grid-column: 2; grid-row: 1; }
+.fleetSessionRow:has(> .forkSourceLink) { margin-left: 10px; }
+@media (max-width: 760px) { .forkChildrenToggle { min-height: 36px; } .turnSummaryMeta .forkTurnButton { padding: 3px 8px; } }

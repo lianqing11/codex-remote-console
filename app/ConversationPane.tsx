@@ -97,6 +97,8 @@ type ConversationPaneProps = {
   onShowAllHistory: () => void;
   diagnostic: GatewayDiagnostic | null;
   onOpenDiff?: (diff: ProjectDiff) => void;
+  onForkTurn?: (turnId: string) => void;
+  forkDisabledReason?: string;
   wsOnline: boolean;
   startProviders?: StartProviderOption[];
   selectedProvider?: ProviderId;
@@ -117,7 +119,7 @@ export const ConversationPane = memo(function ConversationPane({
   historyLimit,
   onShowAllHistory,
   diagnostic,
-  onOpenDiff,
+  onOpenDiff, onForkTurn, forkDisabledReason,
   wsOnline,
   startProviders = [],
   selectedProvider,
@@ -185,7 +187,8 @@ export const ConversationPane = memo(function ConversationPane({
             <>
               <button className="emptyDirectoryButton" type="button" onClick={onChooseDirectory}>
                 <span>Working directory</span>
-                <strong title={directory || undefined}>{directory || "Choose a directory…"}</strong>
+                <strong title={directory || undefined}>{directory?.split("/").filter(Boolean).pop() || "Choose a directory…"}</strong>
+                {directory ? <small dir="ltr" translate="no">{directory}</small> : null}
               </button>
               <div className="emptyStateActions providerToggle" role="radiogroup" aria-label="Agent for new sessions">
                 {startProviders.map((option) => {
@@ -226,6 +229,8 @@ export const ConversationPane = memo(function ConversationPane({
                 diagnostic={active ? diagnostic : null}
                 key={turn.id}
                 onOpenDiff={onOpenDiff}
+                onForkTurn={onForkTurn}
+                forkDisabledReason={forkDisabledReason}
                 provider={provider}
                 turn={turn}
               />

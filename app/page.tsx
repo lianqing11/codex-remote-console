@@ -1,5 +1,7 @@
 "use client";
 
+import { orderBranchThreads } from "./forkTree";
+
 import {
   Archive,
   ArrowUp,
@@ -14,6 +16,7 @@ import {
   Folder,
   FolderOpen,
   GitBranch,
+  GitFork,
   History,
   Home as HomeIcon,
   Info,
@@ -68,6 +71,7 @@ import {
   restoreProviderRuntimeSettings,
   runtimeStorageKey,
   mergeThreadRuntimeSettings,
+  inheritedForkRuntime,
   modeLabel,
   AGENT_PROVIDER_LABELS,
   isAgentProviderId,
@@ -186,6 +190,7 @@ import {
   reconcileQueueActiveTurns,
   queueSummariesByThread,
   queueThreadSummary,
+  type QueueAction,
   type QueuedPrompt,
   type QueueSnapshot
 } from "./queueModel";
@@ -349,6 +354,7 @@ type ProviderCapability =
   | "diff"
   | "approvals"
   | "steer"
+  | "forkAtTurn"
   | "fork"
   | "compact"
   | "plugins"
@@ -369,7 +375,7 @@ type ProviderStatus = {
   authStatus?: "authenticated" | "missing" | "unknown" | string;
   status?: string | null;
   diagnostic?: string | null;
-  capabilities?: Partial<Record<ProviderCapability, boolean>>;
+  capabilities?: Partial<Record<ProviderCapability, boolean>> & { forkDiagnostic?: string };
   rateLimit?: unknown;
 };
 
@@ -390,6 +396,7 @@ const providerCapabilityDefaults: Record<ProviderId, Record<ProviderCapability, 
     approvals: true,
     steer: true,
     fork: true,
+    forkAtTurn: true,
     compact: true,
     plugins: true,
     skills: true,
@@ -411,6 +418,7 @@ const providerCapabilityDefaults: Record<ProviderId, Record<ProviderCapability, 
     approvals: false,
     steer: false,
     fork: false,
+    forkAtTurn: false,
     compact: false,
     plugins: false,
     skills: false,
@@ -432,6 +440,7 @@ const providerCapabilityDefaults: Record<ProviderId, Record<ProviderCapability, 
     approvals: false,
     steer: false,
     fork: false,
+    forkAtTurn: false,
     compact: false,
     plugins: false,
     skills: false,
@@ -1229,6 +1238,10 @@ export default function Home() {
   const [pendingRequests, setPendingRequests] = useState<ServerRequest[]>([]);
   const [activeTurnIdsByThread, setActiveTurnIdsByThread] = useState<Record<string, string>>({});
   const [pendingLiveThreadKeys, setPendingLiveThreadKeys] = useState<string[]>([]);
+  const [forkBusy, setForkBusy] = useState(false);
+  const forkBusyRef = useRef(false);
+  const forkRequests = useRef(new Map<string, string>());
+  const [collapsedForks, setCollapsedForks] = useState<Set<string>>(() => new Set());
   const [queueSnapshot, setQueueSnapshot] = useState<QueueSnapshot>({ items: [], threads: [] });
   const [queueAction, setQueueAction] = useState<string | null>(null);
   const [composerSubmitting, setComposerSubmitting] = useState(false);
@@ -1564,6 +1577,10 @@ export default function Home() {
         key,
         provider,
         title: threadTitle(thread),
+        forkParentKey: thread.forkedFromId ? threadKey(thread.forkedFromId, provider) : undefined,
+        forkParentTitle: thread.forkedFromId ? threadTitle(orderedThreads.find(t => threadKey(t) === threadKey(thread.forkedFromId, provider)) || { ...thread, name: null, preview: thread.forkedFromId }) : undefined,
+        forkChildren: orderedThreads.filter(t => providerOf(t) === provider && t.forkedFromId === nativeThreadId(thread)).length,
+        forkDisabledReason: forkReason(thread),
         cwd: thread.cwd,
         directory: directoryLabel(thread.cwd),
         updatedAt: thread.updatedAt || 0,
@@ -1576,7 +1593,7 @@ export default function Home() {
         queuePaused: Boolean(queue?.threadState?.paused)
       };
     }),
-    [activeTurnIdsByThread, modeOverrideByThread, orderedThreads, queueSnapshot, queueSummaryByThread, runtimeSettingsByProvider, waitingThreadIds]
+    [activeTurnIdsByThread, modeOverrideByThread, orderedThreads, queueSnapshot, queueSummaryByThread, runtimeSettingsByProvider, waitingThreadIds, forkBusy, bootstrap, wsState]
   );
   const fleetRequests = useMemo<FleetRequestSource[]>(
     () => pendingRequests.map((request) => {
@@ -1654,8 +1671,8 @@ export default function Home() {
     providerDetailsActionRef.current();
   }, []);
   const slashContext = useMemo(
-    () => ({ hasThread: Boolean(selectedThread), activeTurn: Boolean(activeTurnId), provider: selectedProvider }),
-    [activeTurnId, selectedProvider, selectedThread]
+    () => ({ hasThread: Boolean(selectedThread), activeTurn: Boolean(activeTurnId), provider: selectedProvider, supportsFork: Boolean(currentCapabilities.fork), forkDisabledReason: selectedThread ? forkReason(selectedThread) : "Select a session first." }),
+    [activeTurnId, selectedProvider, selectedThread, currentCapabilities.fork, forkBusy, queueSnapshot, wsState]
   );
 
   const call = useCallback((message: Omit<any, "requestId">) => {
@@ -1770,25 +1787,17 @@ export default function Home() {
     if (snapshot) applyQueueSnapshot(snapshot);
   }
 
-  async function retryQueuedPrompt(item: QueuedPrompt) {
-    setQueueAction(`retry:${item.id}`);
+  async function runQueueAction(action: QueueAction, item: QueuedPrompt) {
+    setQueueAction(`${action}:${item.id}`);
     try {
-      await call({ type: "queue:retry", queueId: item.id });
+      if (action === "retry") await call({ type: "queue:retry", queueId: item.id });
+      else if (action === "resume") await call({ type: "queue:resume", threadKey: item.threadKey });
+      else {
+        await call({ type: "queue:cancel", queueId: item.id });
+        if (action === "edit") restoreComposerDraft(item.text);
+        if (action === "steer") await steerCurrentTurn(item.text).catch((error) => { restoreComposerDraft(item.text); throw error; });
+      }
       await refreshQueueSnapshot();
-      setNotice("Task returned to the server queue.", "success");
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error), "error");
-    } finally {
-      setQueueAction(null);
-    }
-  }
-
-  async function removeQueuedPrompt(item: QueuedPrompt) {
-    setQueueAction(`remove:${item.id}`);
-    try {
-      await call({ type: "queue:cancel", queueId: item.id });
-      await refreshQueueSnapshot();
-      setNotice("Queued task removed.", "success");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error), "error");
     } finally {
@@ -3238,7 +3247,7 @@ export default function Home() {
         threadId: nativeThreadId(thread),
         provider,
         excludeTurns,
-        ...runtimeThreadParams(runtimeSettingsByProvider[provider] || providerRuntimeDefaults(provider))
+        ...runtimeThreadParams(thread.forkedFromId ? inheritedForkRuntime(runtimeSettingsByProvider[provider] || providerRuntimeDefaults(provider), thread) : runtimeSettingsByProvider[provider] || providerRuntimeDefaults(provider))
       });
 
       // Drop the response if the user has switched to a different session in
@@ -3255,7 +3264,7 @@ export default function Home() {
       setThreads((current) => patchListedThread(current, resumed, key));
       setRuntimeSettingsByProvider((current) => ({
         ...current,
-        [provider]: mergeThreadRuntimeSettings(
+        [provider]: resumed.forkedFromId ? inheritedForkRuntime(current[provider] || providerRuntimeDefaults(provider), resumed, response) : mergeThreadRuntimeSettings(
           current[provider] || providerRuntimeDefaults(provider),
           response,
           { mode: (current[provider] || providerRuntimeDefaults(provider)).mode }
@@ -3435,7 +3444,7 @@ export default function Home() {
         setNotice(`Unknown slash command: ${text}`);
         return;
       }
-      clearComposerDraft();
+      if (command.action !== "fork-thread") clearComposerDraft();
       await executeSlashCommand(command);
       return;
     }
@@ -3458,7 +3467,8 @@ export default function Home() {
         setSelectedThread((current) => (current && threadKey(current) === key ? { ...current, name: titled.name, preview: titled.preview } : current));
         setThreads((current) => current.map((thread) => (threadKey(thread) === key ? { ...thread, name: titled.name, preview: titled.preview } : thread)));
       }
-      setPendingPrompt(expanded);
+      // A follow-up queued behind a live run belongs in the queue tray, not the transcript.
+      if (!activeTurnId) setPendingPrompt(expanded);
       markThreadLive(threadKey(existingThread));
     }
     const lockComposer = !existingThread || directAttachmentSend;
@@ -3505,6 +3515,14 @@ export default function Home() {
       updateActiveTurn(key, null);
       setSelectedThread((current) => current && threadKey(current) === key ? { ...current, status: { type: "cancelled" } } : current);
       setThreads((current) => current.map((thread) => threadKey(thread) === key ? { ...thread, status: { type: "cancelled" } } : thread));
+      // Like Codex/Claude CLIs, Stop returns queued follow-ups to the composer instead of running them.
+      const held = queueThreadSummary(queueSnapshotRef.current, key).items.filter((item) => item.status === "queued");
+      const results = await Promise.allSettled(held.map((item) => call({ type: "queue:cancel", queueId: item.id })));
+      const returned = held.filter((_, index) => results[index].status === "fulfilled").map((item) => item.text);
+      if (returned.length) {
+        restoreComposerDraft(returned.join("\n\n"));
+        setNotice(`${returned.length} queued message${returned.length === 1 ? "" : "s"} moved back to the composer.`);
+      }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error), "error");
     }
@@ -3740,8 +3758,89 @@ export default function Home() {
     setNotice("Session renamed.");
   }
 
+  function forkReason(thread: Thread) {
+    if (forkBusy) return "A fork is being created.";
+    if (wsState !== "online") return "Reconnect before forking.";
+    const provider = providerOf(thread);
+    if (!providerStatus(bootstrap, provider).capabilities?.fork) return bootstrap?.providers?.[provider]?.capabilities?.forkDiagnostic || `${providerName(provider)} fork is unavailable on this server.`;
+    const key = threadKey(thread);
+    if (thread.empty) return "An empty session cannot be forked.";
+    if (activeTurnIdsByThread[key] || waitingThreadIds.has(key) || ["running", "active", "inProgress"].includes(statusLabel(thread.status))
+      || queueSnapshot.items.some(item => item.threadKey === key && ["queued", "dispatching", "running", "waiting_for_input"].includes(item.status))) {
+      return "Wait for this session's tasks and pending input to finish before forking.";
+    }
+    return "";
+  }
+
+  function toggleForkChildren(key: string) {
+    setCollapsedForks(current => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; });
+  }
+
+  const forkParent = selectedThread?.forkedFromId
+    ? threads.find(t => threadKey(t) === threadKey(selectedThread.forkedFromId, selectedThreadProvider))
+      || normalizeThread({ id: selectedThread.forkedFromId, provider: selectedThreadProvider, cwd: selectedThread.cwd, name: null, preview: "Parent session", updatedAt: 0, status: { type: "idle" }, turns: [] })
+    : null;
+
+  // Fork stays tappable while blocked: touch screens never show a disabled button's title.
+  function forkSelectedThread() {
+    if (!selectedThread) return;
+    const reason = forkReason(selectedThread);
+    if (reason) setNotice(reason, "warning");
+    else void forkThread(selectedThread).catch(error => setNotice(error.message, "error"));
+  }
+
+  function forkFleetThread(key: string) {
+    const thread = threads.find(t => threadKey(t) === key);
+    if (thread) void forkThread(thread).catch(error => setNotice(error.message, "error"));
+  }
+
+  async function forkThread(source: Thread, lastTurnId?: string, ephemeral = false) {
+    if (forkBusyRef.current) return;
+    const reason = forkReason(source);
+    if (reason) throw new Error(reason);
+    const provider = providerOf(source);
+    const requestKey = `${threadKey(source)}:${lastTurnId || "end"}`;
+    let requestId = forkRequests.current.get(requestKey);
+    if (!requestId) {
+      const storageKey = `session-fork:${requestKey}`;
+      try { requestId = sessionStorage.getItem(storageKey) || undefined; } catch {}
+      requestId ||= `fork-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      forkRequests.current.set(requestKey, requestId);
+      try { sessionStorage.setItem(storageKey, requestId); } catch {}
+    }
+    forkBusyRef.current = true;
+    setForkBusy(true);
+    try {
+      const response = await agent(provider, "thread/fork", {
+        threadId: nativeThreadId(source), forkRequestId: requestId, ephemeral,
+        ...(lastTurnId ? { lastTurnId } : {}), ...(ephemeral ? { excludeTurns: false } : {})
+      });
+      const thread = normalizeThread({ ...(response.thread as Thread), provider });
+      const key = threadKey(thread);
+      knownThreadIdsRef.current.add(key);
+      if (provider === "codex") warmThreadIdsRef.current.add(key);
+      dismissedThreadIdsRef.current.delete(key);
+      selectProviderPreference(provider);
+      selectedThreadIdRef.current = key;
+      setSelectedThread(thread);
+      updateActiveTurn(key, null);
+      setThreads(current => mergeThreadsById(current, [thread]));
+      applyItemsFromTurns(key, thread.turns || []);
+      updateRuntimeSettings(current => inheritedForkRuntime(current, thread, response), provider);
+      setModeOverrideByThread(current => ({ ...current, [key]: thread.runtime?.mode === "plan" || thread.mode === "plan" ? "plan" : thread.mode === "ask" ? "ask" : "default" }));
+      setCollapsedForks(current => { const next = new Set(current); next.delete(threadKey(source)); return next; });
+      setWorkspaceView("chat");
+      setMobilePanel(null);
+      setHistoryLimit(40);
+      forkRequests.current.delete(requestKey);
+      try { sessionStorage.removeItem(`session-fork:${requestKey}`); } catch {}
+      setNotice(ephemeral ? "Side session created." : "Session forked. Project files are shared.");
+    } finally { forkBusyRef.current = false; setForkBusy(false); }
+  }
+
   async function forkCurrentThread(ephemeral: boolean) {
     if (!selectedThread) return;
+    if (!ephemeral) { await forkThread(selectedThread); return; }
     const response = await codex("thread/fork", {
       threadId: nativeThreadId(selectedThread),
       ephemeral,
@@ -3942,12 +4041,13 @@ export default function Home() {
   }
 
   const selectFleetThread = useCallback((key: string) => {
-    const thread = threadByKey.get(key);
+    const branch = orderedThreads.find(candidate => candidate.forkedFromId && threadKey(candidate.forkedFromId, providerOf(candidate)) === key);
+    const thread = threadByKey.get(key) || (branch ? normalizeThread({ id: branch.forkedFromId!, provider: providerOf(branch), cwd: branch.cwd, name: null, preview: "Parent session", updatedAt: 0, status: { type: "idle" }, turns: [] }) : null);
     if (!thread) return;
     setWorkspaceView("chat");
     setMobilePanel(null);
     resumeThread(thread).catch((error) => setNotice(error instanceof Error ? error.message : String(error), "error"));
-  }, [threadByKey]);
+  }, [threadByKey, orderedThreads]);
 
   function selectAdjacentThread(thread: Thread | null) {
     if (!thread) return;
@@ -4878,6 +4978,9 @@ export default function Home() {
           onRename={renameFleetThread}
           onClose={closeFleetThread}
           onManage={manageFleetThread}
+          onFork={forkFleetThread}
+          onToggleBranches={toggleForkChildren}
+          collapsedBranches={collapsedForks}
         />
 
 	        <section className="threadHeader">
@@ -4923,7 +5026,7 @@ export default function Home() {
           {orderedThreads.length > 0 && listedThreads.length === 0 ? <p className="muted">Live sessions stay in Now until they finish.</p> : null}
           {threadLayout === "recent" ? (
             <div className="threadGroupItems">
-              {listedThreads.map((thread) => {
+              {orderBranchThreads(listedThreads, collapsedForks).map((thread) => {
                 const key = threadKey(thread);
                 const fleetThread = fleetByKey.get(key);
                 const loadingHistory = historyLoadingThreadId === key;
@@ -4940,6 +5043,9 @@ export default function Home() {
                     onRename={renameFleetThread}
                     onClose={closeFleetThread}
                     onManage={manageFleetThread}
+          onFork={forkFleetThread}
+          onToggleBranches={toggleForkChildren}
+          collapsedBranches={collapsedForks}
                   />
                 );
               })}
@@ -5018,7 +5124,7 @@ export default function Home() {
                   <>
                     <div className="threadGroupPath" dir="ltr" title={group.cwd} translate="no">{group.cwd}</div>
                     <div className="threadGroupItems">
-                      {group.threads.map((thread) => {
+                      {orderBranchThreads(group.threads, collapsedForks).map((thread) => {
                         const key = threadKey(thread);
                         const fleetThread = fleetByKey.get(key);
                         const loadingHistory = historyLoadingThreadId === key;
@@ -5035,6 +5141,9 @@ export default function Home() {
                             onRename={renameFleetThread}
                             onClose={closeFleetThread}
                             onManage={manageFleetThread}
+          onFork={forkFleetThread}
+          onToggleBranches={toggleForkChildren}
+          collapsedBranches={collapsedForks}
                           />
                         );
                       })}
@@ -5096,8 +5205,15 @@ export default function Home() {
               </div>
               <div className="topbarMeta">
                 <button type="button" className="topbarPath" dir="ltr" title={selectedThread?.cwd || cwd || undefined} translate="no" onClick={() => setDirectoryPickerOpen(true)} aria-label="Choose working directory">
-                  {selectedThread?.cwd || cwd || "Choose a working directory"}
+                  <span className="topbarPathFull">{selectedThread?.cwd || cwd || "Choose a working directory"}</span>
+                  <span className="topbarPathShort"><Folder aria-hidden="true" size={12} />{(selectedThread?.cwd || cwd).split("/").filter(Boolean).pop() || "Directory"}</span>
                 </button>
+                {forkParent ? (
+                  <button className="forkParentLink" type="button" title={`Forked from ${threadTitle(forkParent)}`} onClick={() => void resumeThread(forkParent).catch(error => setNotice(error.message, "error"))}>
+                    <GitFork aria-hidden="true" size={12} />
+                    <span>{forkParent.name || forkParent.id.slice(0, 12)}</span>
+                  </button>
+                ) : null}
                 {selectedThread && sessionExecutionState.phase !== "idle" ? (
                   <span className={`sessionState state-${sessionExecutionState.phase}`}>
                     {threadStatusText(sessionExecutionState.phase)}
@@ -5114,6 +5230,18 @@ export default function Home() {
           </div>
           <div className="topActions">
             <button className="appearanceButton" type="button" aria-label="Appearance" title="Appearance" onClick={() => setAppearanceOpen(true)}><Palette size={18} /></button>
+            {selectedThread ? (
+              <button
+                aria-disabled={Boolean(forkReason(selectedThread))}
+                aria-label="Fork session"
+                className="forkSessionButton"
+                title={forkReason(selectedThread) || "Fork into an independent session that shares the project files"}
+                type="button"
+                onClick={forkSelectedThread}
+              >
+                {forkBusy ? <LoaderCircle aria-hidden="true" className="queueSpinner" size={18} /> : <GitFork aria-hidden="true" size={18} />}
+              </button>
+            ) : null}
             <button className="mobileToolsButton" type="button" aria-label="Tools" title="Tools" onClick={() => setToolsOpen(true)}><MoreHorizontal size={20} /></button>
             <button className="usageDetailsControl" type="button" aria-label="Usage details" title={usageUpdatedAt ? `Updated ${new Date(usageUpdatedAt).toLocaleTimeString()}` : "Usage details"} onClick={() => setWorkspaceView("runtime")}>
             {isCursorProvider ? (
@@ -5172,6 +5300,8 @@ export default function Home() {
           ) : null}
           <RunProgress item={queueSnapshot.items.filter((item) => item.threadKey === currentThreadKey).find((item) => ["dispatching", "running", "waiting_for_input"].includes(item.status)) || queueSnapshot.items.filter((item) => item.threadKey === currentThreadKey).at(-1)} active={Boolean(activeTurnId)} />
           <ConversationPane
+            onForkTurn={selectedThreadProvider === "codex" && currentCapabilities.forkAtTurn ? (turnId) => { if (selectedThread) void forkThread(selectedThread, turnId).catch(error => setNotice(error.message, "error")); } : undefined}
+            forkDisabledReason={selectedThread ? forkReason(selectedThread) : ""}
             threadKey={currentThreadKey}
             provider={selectedThreadProvider}
             providerLabel={providerName(selectedProvider)}
@@ -5251,8 +5381,7 @@ export default function Home() {
           onAtQuery={setAtQuery}
           onPickMention={(hit) => setFileContexts((current) => upsertChip(current, { path: hit.path, startLine: null, endLine: null, text: "" }))}
           onMentionsParsed={applyParsedMentions}
-          onRetryQueue={retryQueuedPrompt}
-          onRemoveQueue={removeQueuedPrompt}
+          onQueueAction={runQueueAction}
         />
 
           </section>
@@ -5347,7 +5476,7 @@ export default function Home() {
       </section>
 
       {appearanceOpen ? <AppearanceDialog value={appearance} onChange={updateAppearance} onClose={() => setAppearanceOpen(false)} /> : null}
-      {toolsOpen ? <ToolsDialog onClose={() => setToolsOpen(false)} onView={view => { setToolsOpen(false); setMobilePanel(null); if (view === "diff") setWorkspaceDiffKind("working"); setWorkspaceView(view); }} onAppearance={() => { setToolsOpen(false); setAppearanceOpen(true); }} onDirectory={() => { setToolsOpen(false); setDirectoryPickerOpen(true); }} onLogout={logout} /> : null}
+      {toolsOpen ? <ToolsDialog onClose={() => setToolsOpen(false)} onView={view => { setToolsOpen(false); setMobilePanel(null); if (view === "diff") setWorkspaceDiffKind("working"); setWorkspaceView(view); }} onAppearance={() => { setToolsOpen(false); setAppearanceOpen(true); }} onDirectory={() => { setToolsOpen(false); setDirectoryPickerOpen(true); }} onFork={selectedThread ? () => { setToolsOpen(false); forkSelectedThread(); } : undefined} onLogout={logout} /> : null}
       {sessionManagerOpen ? renderSessionManager() : null}
       {commandPanel ? renderCommandPanel() : null}
       {activeRequest && providerCapability(providerStatus(bootstrap, activeRequestProvider), "approvals") ? (

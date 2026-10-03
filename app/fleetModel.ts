@@ -6,6 +6,10 @@ export type FleetProvider = ProviderId;
 export type FleetStatus = "needsInput" | "running" | "queued" | "paused" | "failed" | "idle";
 
 export type FleetThreadSource = {
+  forkParentKey?: string;
+  forkParentTitle?: string;
+  forkChildren?: number;
+  forkDisabledReason?: string;
   key: string;
   provider: FleetProvider;
   title: string;

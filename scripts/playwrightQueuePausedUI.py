@@ -49,7 +49,7 @@ async def main() -> None:
         await bar.wait_for(state="visible", timeout=30_000)
         assert await bar.get_by_role("button", name="Resume").count() == 0
         title = (await bar.locator(".queueStatusToggle strong").inner_text()).strip()
-        assert title in {"Queue needs review", "Waiting for your input"} or title.endswith("queued"), title
+        assert title in {"Queue needs review", "Waiting for your input"} or "queued" in title, title
         collapsed_box = await bar.bounding_box()
         assert collapsed_box and collapsed_box["height"] <= 64, collapsed_box
 

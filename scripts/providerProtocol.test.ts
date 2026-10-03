@@ -45,7 +45,7 @@ assert.match(cursorSource, /account\/usage\/read/);
 assert.match(cursorSource, /planMode: true/);
 assert.match(cursorSource, /askMode: true/);
 assert.match(cursorSource, /approvals: false/);
-assert.match(cursorSource, /fork: false/);
+assert.match(cursorSource, /fork: cursorForkSupported/);
 assert.match(cursorSource, /plugins: false/);
 assert.match(threadModelSource, /export function threadKey/);
 assert.match(threadModelSource, /return `\$\{inferredProvider\}:\$\{nativeThreadId\(thread\)\}`/);

@@ -34,6 +34,8 @@ export type QueuedPrompt = {
   updatedAt: number;
 };
 
+export type QueueAction = "retry" | "remove" | "edit" | "steer" | "resume";
+
 export type QueueThreadState = {
   threadKey: string;
   paused: boolean;

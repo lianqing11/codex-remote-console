@@ -1,3 +1,4 @@
+import { forkCursorStore, cursorForkSupported, CURSOR_FORK_VERSION } from "./cursorFork";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -581,7 +582,9 @@ export class CursorProvider {
         approvals: false,
         steering: false,
         images: true,
-        fork: false,
+        fork: cursorForkSupported(version),
+        forkAtTurn: false,
+        forkDiagnostic: cursorForkSupported(version) ? "" : `Cursor fork requires CLI ${CURSOR_FORK_VERSION}.`,
         compact: false,
         plugins: false,
         skills: false,
@@ -612,6 +615,7 @@ export class CursorProvider {
     const input = params && typeof params === "object" ? (params as Record<string, unknown>) : {};
 
     if (method === "session/list" || method === "thread/list") return { data: this.visibleSessions(), threads: this.visibleThreads() };
+    if (method === "thread/fork" || method === "session/fork") return this.forkSession(input);
     if (method === "session/create" || method === "thread/start") return this.createSession(input);
     if (method === "session/read" || method === "thread/read") return this.readSession(input);
     if (method === "session/rename" || method === "thread/name" || method === "thread/setName") return this.renameSession(input);
@@ -820,6 +824,29 @@ export class CursorProvider {
     await this.saveIndex();
     await this.saveSession(session);
     return { session: publicSession(session), thread: asThread(session) };
+  }
+
+  private async forkSession(input: Record<string, unknown>) {
+    if (input.lastTurnId) throw new Error("Cursor supports full-session forks only.");
+    const source = this.sessionOrThrow(String(input.sessionId || input.threadId || ""));
+    if (this.activeRuns.has(source.sessionId)) throw new Error("Wait for Cursor to finish before forking.");
+    if (!source.transcript.length) throw new Error("An empty session cannot be forked.");
+    const title = stringParam(input, "title") || `${source.title} · fork`;
+    const project = await resolveProject(source.cwd);
+    const fork = await forkCursorStore({ sourceId: source.nativeSessionId, cwd: project.realpath, title, version: await this.version() }).catch(error => {
+      // The adapter removes only its own temporary directory on every failure.
+      if (error instanceof Error) Object.assign(error, { forkSafeToRetry: true });
+      throw error;
+    });
+    const session: CursorSessionRecord = {
+      ...source, sessionId: fork.id, nativeSessionId: fork.id, title, archived: false,
+      status: "idle", createdAt: now(), updatedAt: now(), lastError: undefined,
+      transcript: structuredClone(source.transcript)
+    };
+    this.sessions.set(fork.id, session);
+    await this.saveSession(session);
+    await this.saveIndex();
+    return this.readSession({ sessionId: fork.id });
   }
 
   private async readSession(input: Record<string, unknown>) {

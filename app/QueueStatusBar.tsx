@@ -1,14 +1,15 @@
 "use client";
 
-import { memo, useState } from "react";
-import { ChevronDown, CircleAlert, ListTree, LoaderCircle, RotateCcw, X } from "lucide-react";
-import { queueBarHasActions, queueStatusLabel, type QueueThreadSummary, type QueuedPrompt } from "./queueModel";
+import { memo, useState, type ReactNode } from "react";
+import { ChevronDown, ChevronRight, CircleAlert, ListTree, LoaderCircle, Pencil, Play, RotateCcw, X } from "lucide-react";
+import { queueBarHasActions, queueStatusLabel, type QueueAction, type QueueThreadSummary, type QueuedPrompt } from "./queueModel";
 
 type QueueStatusBarProps = {
   summary: QueueThreadSummary;
   busyAction: string | null;
-  onRetry: (item: QueuedPrompt) => Promise<void>;
-  onRemove: (item: QueuedPrompt) => Promise<void>;
+  running: boolean;
+  canSteer: boolean;
+  onAction: (action: QueueAction, item: QueuedPrompt) => Promise<void>;
 };
 
 function compactPrompt(text: string, limit = 120) {
@@ -16,7 +17,7 @@ function compactPrompt(text: string, limit = 120) {
   return compact.length > limit ? `${compact.slice(0, limit - 1)}…` : compact;
 }
 
-function railCopy(summary: QueueThreadSummary) {
+function railCopy(summary: QueueThreadSummary, running: boolean) {
   const { attentionCount, queuedCount, waitingForInput } = summary;
   const paused = Boolean(summary.threadState?.paused);
   if (waitingForInput) {
@@ -36,7 +37,8 @@ function railCopy(summary: QueueThreadSummary) {
   if (attentionCount) {
     return { title: "Queue needs review", detail: `${attentionCount} task${attentionCount === 1 ? "" : "s"} need a decision`, tone: "attention" };
   }
-  return { title: `${queuedCount} queued`, detail: "Will start on the next send", tone: "queued" };
+  const next = summary.items.find((item) => item.status === "queued");
+  return { title: `${queuedCount} queued ${running ? "· sends after this run" : "· on hold"}`, detail: next ? `Next: ${compactPrompt(next.text, 80)}` : "", tone: "queued" };
 }
 
 function QueueIcon({ tone }: { tone: string }) {
@@ -47,13 +49,23 @@ function QueueIcon({ tone }: { tone: string }) {
 export const QueueStatusBar = memo(function QueueStatusBar({
   summary,
   busyAction,
-  onRetry,
-  onRemove
+  running,
+  canSteer,
+  onAction
 }: QueueStatusBarProps) {
   const [expanded, setExpanded] = useState(false);
   if (!queueBarHasActions(summary)) return null;
 
-  const copy = railCopy(summary);
+  const copy = railCopy(summary, running);
+  const held = summary.items.find((item) => item.status === "queued");
+  // Stopped or failed runs leave later tasks on hold instead of firing them unattended.
+  const runNext = !running && !summary.activeCount && !summary.threadState?.paused ? held : undefined;
+  const actionButton = (action: QueueAction, item: QueuedPrompt, label: string, icon: ReactNode, title: string, className?: string) => (
+    <button aria-label={`${label}: ${compactPrompt(item.text, 40)}`} className={className} disabled={Boolean(busyAction)} title={title} type="button" onClick={() => void onAction(action, item)}>
+      {busyAction === `${action}:${item.id}` ? <LoaderCircle aria-hidden="true" className="queueSpinner" size={14} /> : icon}
+      {label}
+    </button>
+  );
 
   return (
     <section className={`queueStatusBar tone-${copy.tone}`} aria-label="Server queue" aria-live="polite">
@@ -73,6 +85,7 @@ export const QueueStatusBar = memo(function QueueStatusBar({
           <span className="queueCount">{summary.items.length}</span>
           <ChevronDown aria-hidden="true" className={expanded ? "expanded" : ""} size={16} />
         </button>
+        {runNext ? actionButton("resume", runNext, "Run next", <Play aria-hidden="true" size={14} />, "Send the next queued task now", "queueResumeButton") : null}
       </div>
 
       {expanded ? (
@@ -80,7 +93,7 @@ export const QueueStatusBar = memo(function QueueStatusBar({
           {summary.threadState?.reason ? <p className="queuePauseReason">{summary.threadState.reason}</p> : null}
           {summary.items.map((item, index) => {
             const retryable = item.status === "failed" || item.status === "needs_review";
-            const removable = retryable || item.status === "queued";
+            const queued = item.status === "queued";
             return (
               <article className={`queueStatusItem status-${item.status}`} key={item.id}>
                 <span className="queuePosition">{index + 1}</span>
@@ -91,30 +104,12 @@ export const QueueStatusBar = memo(function QueueStatusBar({
                     {item.lastError ? <span title={item.lastError}>{compactPrompt(item.lastError, 150)}</span> : null}
                   </small>
                 </span>
-                {retryable || removable ? (
+                {retryable || queued ? (
                   <span className="queueItemActions">
-                    {retryable ? (
-                      <button
-                        aria-label={`Retry queued task ${index + 1}`}
-                        disabled={Boolean(busyAction)}
-                        type="button"
-                        onClick={() => void onRetry(item)}
-                      >
-                        {busyAction === `retry:${item.id}` ? <LoaderCircle aria-hidden="true" className="queueSpinner" size={14} /> : <RotateCcw aria-hidden="true" size={14} />}
-                        Retry
-                      </button>
-                    ) : null}
-                    {removable ? (
-                      <button
-                        aria-label={`Remove queued task ${index + 1}`}
-                        disabled={Boolean(busyAction)}
-                        type="button"
-                        onClick={() => void onRemove(item)}
-                      >
-                        {busyAction === `remove:${item.id}` ? <LoaderCircle aria-hidden="true" className="queueSpinner" size={14} /> : <X aria-hidden="true" size={14} />}
-                        Remove
-                      </button>
-                    ) : null}
+                    {retryable ? actionButton("retry", item, "Retry", <RotateCcw aria-hidden="true" size={14} />, "Queue this task again") : null}
+                    {queued && running && canSteer ? actionButton("steer", item, "Steer", <ChevronRight aria-hidden="true" size={14} />, "Send into the active run now") : null}
+                    {queued ? actionButton("edit", item, "Edit", <Pencil aria-hidden="true" size={14} />, "Move back to the composer") : null}
+                    {actionButton("remove", item, "Remove", <X aria-hidden="true" size={14} />, "Remove from the queue")}
                   </span>
                 ) : null}
               </article>

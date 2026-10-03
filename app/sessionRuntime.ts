@@ -136,6 +136,24 @@ export function mergeThreadRuntimeSettings(
   };
 }
 
+/** A branch starts from its own saved settings, independently of the provider toolbar. */
+export function inheritedForkRuntime(current: SessionRuntimeSettings, thread: {
+  mode?: unknown;
+  runtime?: { model?: string | null; reasoningEffort?: string | null; serviceTier?: string | null; mode?: unknown;
+    forkSettings?: { approvalPolicy?: ApprovalPolicy; sandbox?: SandboxMode } } | null;
+}, response: ThreadRuntimeResponse = {}): SessionRuntimeSettings {
+  const runtime = thread.runtime;
+  return {
+    ...current,
+    mode: sessionModeForThread(thread, "default"),
+    model: runtime?.model || response.model || "",
+    reasoningEffort: (runtime?.reasoningEffort ?? response.reasoningEffort ?? null) as ReasoningEffort,
+    serviceTier: (runtime?.serviceTier ?? response.serviceTier ?? null) as ServiceTier,
+    approvalPolicy: runtime?.forkSettings?.approvalPolicy ?? response.approvalPolicy ?? null,
+    sandboxMode: runtime?.forkSettings?.sandbox ?? response.sandboxMode ?? null
+  };
+}
+
 export function modeLabel(mode: ModeKind) {
   if (mode === "plan") return "Plan";
   if (mode === "ask") return "Ask";

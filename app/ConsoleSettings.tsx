@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, type ReactNode } from "react";
-import { FolderOpen, FileDiff, SlidersHorizontal, Palette, LogOut, X, Sun, Moon, Monitor } from "lucide-react";
+import { FileDiff, FolderOpen, GitFork, LogOut, Monitor, Moon, Palette, SlidersHorizontal, Sun, X } from "lucide-react";
 import type { Appearance } from "./appearance";
 
 function SettingsDialog({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
@@ -47,11 +47,12 @@ export function AppearanceDialog({ value, onChange, onClose }: { value: Appearan
   </SettingsDialog>;
 }
 
-export function ToolsDialog({ onClose, onView, onAppearance, onDirectory, onLogout }: {
+export function ToolsDialog({ onClose, onView, onAppearance, onDirectory, onFork, onLogout }: {
   onClose: () => void; onView: (view: "files" | "diff" | "runtime") => void;
-  onAppearance: () => void; onDirectory: () => void; onLogout: () => void;
+  onAppearance: () => void; onDirectory: () => void; onFork?: () => void; onLogout: () => void;
 }) {
   return <SettingsDialog title="Tools" onClose={onClose}><div className="toolsActions">
+    {onFork ? <button type="button" onClick={onFork}><GitFork size={20} />Fork session</button> : null}
     <button type="button" onClick={() => onView("files")}><FolderOpen size={20} />Files</button>
     <button type="button" onClick={() => onView("diff")}><FileDiff size={20} />Changes</button>
     <button type="button" onClick={() => onView("runtime")}><SlidersHorizontal size={20} />Session settings</button>

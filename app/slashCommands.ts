@@ -34,6 +34,8 @@ export type SlashCommandContext = {
   hasThread: boolean;
   activeTurn: boolean;
   provider?: ProviderId;
+  supportsFork?: boolean;
+  forkDisabledReason?: string;
 };
 
 const unsupported = (reason: string) => ({
@@ -316,8 +318,12 @@ export function filterSlashCommands(query: string) {
 export function slashCommandDisabledReason(command: SlashCommand, context: SlashCommandContext) {
   if (!command.available) return command.disabledReason || "This command is not available in Coding Agent Console.";
   if (command.id === "ask" && context.provider !== "cursor") return "Ask mode is available for Cursor sessions.";
+  if (command.id === "fork") {
+    if (context.forkDisabledReason) return context.forkDisabledReason;
+    if (context.supportsFork === false || (context.supportsFork === undefined && context.provider && context.provider !== "codex")) return "Fork is unavailable for this provider.";
+  }
   if (context.provider && context.provider !== "codex") {
-    if (["permissions", "fast", "collab", "fork", "side", "compact", "mcp", "plugins", "skills", "memories", "experimental"].includes(command.id)) {
+    if (["permissions", "fast", "collab", "side", "compact", "mcp", "plugins", "skills", "memories", "experimental"].includes(command.id)) {
       return "This command is Codex-only.";
     }
   }

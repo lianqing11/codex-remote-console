@@ -7,6 +7,7 @@ import {
   CircleAlert,
   CircleX,
   ListTree,
+  GitFork,
   LoaderCircle,
   MoreHorizontal,
   Pencil,
@@ -29,6 +30,9 @@ type AgentFleetProps = {
   onRename: (threadKey: string) => void;
   onClose: (threadKey: string) => void;
   onManage: (threadKey: string) => void;
+  onFork?: (threadKey: string) => void;
+  onToggleBranches?: (threadKey: string) => void;
+  collapsedBranches?: Set<string>;
 };
 
 function statusCopy(status: FleetStatus, queueCount = 0) {
@@ -72,6 +76,9 @@ export type FleetSessionRowProps = {
   onRename: (threadKey: string) => void;
   onClose: (threadKey: string) => void;
   onManage: (threadKey: string) => void;
+  onFork?: (threadKey: string) => void;
+  onToggleBranches?: (threadKey: string) => void;
+  collapsedBranches?: Set<string>;
 };
 
 export const FleetSessionRow = memo(function FleetSessionRow({
@@ -84,7 +91,7 @@ export const FleetSessionRow = memo(function FleetSessionRow({
   onTogglePin,
   onRename,
   onClose,
-  onManage
+  onManage, onFork, onToggleBranches, collapsedBranches
 }: FleetSessionRowProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDetailsElement>(null);
@@ -184,6 +191,8 @@ export const FleetSessionRow = memo(function FleetSessionRow({
           </small>
         </span>
       </a>
+      {thread.forkParentKey ? <button className="forkSourceLink" type="button" title={`Forked from ${thread.forkParentTitle}`} onClick={() => onSelect(thread.forkParentKey!)}>↳ {thread.forkParentTitle || "Parent"}</button> : null}
+      {thread.forkChildren && onToggleBranches ? <button className="forkChildrenToggle" type="button" aria-label={`Branches of ${thread.title}`} aria-expanded={!collapsedBranches?.has(thread.key)} onClick={() => onToggleBranches(thread.key)}>{collapsedBranches?.has(thread.key) ? "▸" : "▾"} {thread.forkChildren}</button> : null}
       <details
         className="fleetRowMenu"
         open={menuOpen}
@@ -203,6 +212,7 @@ export const FleetSessionRow = memo(function FleetSessionRow({
             <Pencil aria-hidden="true" size={14} />
             Rename
           </button>
+          {onFork ? <button role="menuitem" type="button" disabled={Boolean(thread.forkDisabledReason)} title={thread.forkDisabledReason || "Fork this session"} onClick={() => { onFork(thread.key); setMenuOpen(false); }}><GitFork aria-hidden="true" size={14} />Fork session</button> : null}
           <button role="menuitem" type="button" onClick={() => { onManage(thread.key); setMenuOpen(false); }}>
             <ListTree aria-hidden="true" size={14} />
             Session Manager
@@ -261,6 +271,9 @@ export const AgentFleet = memo(function AgentFleet(props: AgentFleetProps) {
     onTogglePin: props.onTogglePin,
     onRename: props.onRename,
     onClose: props.onClose,
+    onFork: props.onFork,
+    onToggleBranches: props.onToggleBranches,
+    collapsedBranches: props.collapsedBranches,
     onManage: props.onManage
   };
 

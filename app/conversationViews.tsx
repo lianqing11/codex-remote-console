@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, ChevronRight, Copy, FileDiff, FileText, ListTree, Terminal } from "lucide-react";
+import { CheckCircle2, ChevronRight, Copy, FileDiff, FileText, GitFork, ListTree, Terminal } from "lucide-react";
 import dynamic from "next/dynamic";
 import SafeMarkdown from "./SafeMarkdown";
 import { getJson } from "./apiClient";
@@ -233,7 +233,7 @@ export const TurnPanel = memo(function TurnPanel({
   active,
   defaultOpen,
   diagnostic,
-  onOpenDiff,
+  onOpenDiff, onForkTurn, forkDisabledReason,
   provider,
   turn
 }: {
@@ -241,6 +241,8 @@ export const TurnPanel = memo(function TurnPanel({
   defaultOpen: boolean;
   diagnostic: GatewayDiagnostic | null;
   onOpenDiff?: (diff: ProjectDiff) => void;
+  onForkTurn?: (turnId: string) => void;
+  forkDisabledReason?: string;
   provider: ProviderId;
   turn: DisplayTurn;
 }) {
@@ -303,6 +305,20 @@ export const TurnPanel = memo(function TurnPanel({
         <span className="turnSummaryMeta">
           <span className={diagnostic ? "errorBadge" : active || turn.pending ? "liveBadge" : ""}>{status}</span>
           {diffItems.length ? <span>{diffItems.length} change{diffItems.length === 1 ? "" : "s"}</span> : null}
+          {onForkTurn && turnCompleted && !turn.pending ? (
+            <button
+              aria-disabled={Boolean(forkDisabledReason)}
+              aria-label="Fork from this turn"
+              className="forkTurnButton"
+              title={forkDisabledReason || "Start a new session from this turn"}
+              type="button"
+              // The header toggles the turn; forking must not collapse it. Blocked forks still explain why on tap.
+              onClick={(event) => { event.preventDefault(); event.stopPropagation(); onForkTurn(turn.id); }}
+            >
+              <GitFork aria-hidden="true" size={12} />
+              Fork
+            </button>
+          ) : null}
         </span>
       </summary>
       {open ? (
@@ -358,6 +374,8 @@ export const TurnPanel = memo(function TurnPanel({
 },
 (current, next) =>
   current.active === next.active &&
+  current.forkDisabledReason === next.forkDisabledReason &&
+  Boolean(current.onForkTurn) === Boolean(next.onForkTurn) &&
   current.defaultOpen === next.defaultOpen &&
   current.diagnostic === next.diagnostic &&
   current.onOpenDiff === next.onOpenDiff &&

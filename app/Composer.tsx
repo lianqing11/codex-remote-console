@@ -27,7 +27,7 @@ import {
   slashCommandDisabledReason,
   type SlashCommand
 } from "./slashCommands";
-import type { QueueThreadSummary, QueuedPrompt } from "./queueModel";
+import type { QueueAction, QueueThreadSummary, QueuedPrompt } from "./queueModel";
 import { formatBytes } from "./formatUtils";
 import type { SessionExecutionState } from "./sessionExecution";
 import type { ModeKind, ProviderId } from "./sessionRuntime";
@@ -88,8 +88,7 @@ type ComposerProps = {
   onAtQuery: (query: string | null) => void;
   onPickMention: (hit: FileMentionHit) => void;
   onMentionsParsed: (mentions: Array<{ path: string; startLine: number | null; endLine: number | null }>) => void;
-  onRetryQueue: (item: QueuedPrompt) => Promise<void>;
-  onRemoveQueue: (item: QueuedPrompt) => Promise<void>;
+  onQueueAction: (action: QueueAction, item: QueuedPrompt) => Promise<void>;
 };
 
 function SlashPalette({
@@ -207,8 +206,7 @@ export const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function 
   onAtQuery,
   onPickMention,
   onMentionsParsed,
-  onRetryQueue,
-  onRemoveQueue
+  onQueueAction
 }, ref) {
   const activeTurnId = executionState.activeTurnId;
   const hasThread = executionState.hasThread;
@@ -296,7 +294,7 @@ export const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function 
 
   const runSlash = (command: SlashCommand) => {
     if (slashCommandDisabledReason(command, slashContext)) return;
-    updateDraft("");
+    if (command.action !== "fork-thread") updateDraft("");
     void onSlash(command);
   };
 
@@ -477,8 +475,9 @@ export const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function 
           key={threadKey}
           summary={queueSummary}
           busyAction={queueAction}
-          onRetry={onRetryQueue}
-          onRemove={onRemoveQueue}
+          running={Boolean(activeTurnId)}
+          canSteer={supportsSteer}
+          onAction={onQueueAction}
         />
       ) : null}
       <div className="composerInputRow">

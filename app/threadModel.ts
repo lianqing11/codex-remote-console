@@ -32,6 +32,7 @@ export type ThreadRuntimeMetadata = {
   reasoningEffort: string | null;
   serviceTier: string | null;
   mode: string | null;
+  forkSettings?: { approvalPolicy?: import("./sessionRuntime").ApprovalPolicy; sandbox?: import("./sessionRuntime").SandboxMode };
 };
 
 export type TurnGroup = {
@@ -81,6 +82,9 @@ export function reuseDisplayTurns(previous: DisplayTurn[], next: DisplayTurn[]):
 
 export type Thread = {
   id: string;
+  forkedFromId?: string | null;
+  forkedAtTurnId?: string | null;
+  forkedAt?: number;
   provider?: ProviderId;
   nativeId?: string;
   version?: string | null;

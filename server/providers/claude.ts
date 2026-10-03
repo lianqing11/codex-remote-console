@@ -1,6 +1,8 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { homedir } from "node:os";
 import path from "node:path";
 import { childProcessEnv } from "../codex/stdioSupport";
@@ -425,7 +427,8 @@ export class ClaudeProvider {
         approvals: false,
         steering: false,
         images: true,
-        fork: false,
+        fork: true,
+        forkAtTurn: false,
         compact: false,
         plugins: false,
         skills: false,
@@ -456,6 +459,7 @@ export class ClaudeProvider {
     const input = params && typeof params === "object" ? params as Record<string, unknown> : {};
     if (method === "thread/list") return { data: (await this.listSessions()).filter((session) => !session.archived) };
     if (method === "thread/start") return this.startThread(input);
+    if (method === "thread/fork") return this.forkThread(input);
     if (method === "thread/read" || method === "thread/resume") return this.readThread(input);
     if (method === "thread/name/set" || method === "thread/name") return this.renameThread(input);
     if (method === "thread/archive") return this.archiveThread(input, true);
@@ -593,6 +597,30 @@ export class ClaudeProvider {
     return sessions.sort((left, right) => right.updatedAt - left.updatedAt);
   }
 
+  private async forkThread(input: Record<string, unknown>) {
+    if (input.lastTurnId) throw new Error("Claude supports full-session forks only.");
+    const id = stringParam(input, "threadId");
+    if (this.runs.has(id)) throw new Error("Wait for Claude to finish before forking.");
+    const source = this.overlays.get(id);
+    if (!source) throw new Error("Unknown Claude session.");
+    const history = await this.readJsonl(source.cwd, id);
+    if (!history.turns.length) throw new Error("An empty session cannot be forked.");
+    const title = stringParam(input, "title") || `${source.title} · fork`;
+    const { stdout } = await promisify(execFile)(process.execPath, [
+      fileURLToPath(new URL("./claudeFork.mjs", import.meta.url)), id, source.cwd, title, this.jsonlPath(source.cwd, id)
+    ], { timeout: 120_000, env: { ...childProcessEnv(this.env), CLAUDE_CONFIG_DIR: this.configDir } }).catch(error => {
+      if (String(error.stderr || "").startsWith("FORK_SAFE_RETRY:")) throw Object.assign(new Error(String(error.stderr).slice(16)), { forkSafeToRetry: true });
+      throw error;
+    });
+    const result = JSON.parse(stdout) as { sessionId: string };
+    if (!/^[a-f0-9-]{36}$/i.test(result.sessionId) || result.sessionId === id) throw new Error("Claude fork returned an invalid ID.");
+    const overlay = this.overlay(result.sessionId, source.cwd, {
+      title, model: source.model, mode: source.mode, effort: source.effort, nativeStarted: true
+    });
+    await this.persist();
+    return this.asThread(overlay, await this.readJsonl(source.cwd, overlay.id));
+  }
+
   private async startThread(input: Record<string, unknown>) {
     const cwd = stringParam(input, "cwd") || process.cwd();
     const id = randomUUID();
@@ -678,7 +706,7 @@ export class ClaudeProvider {
       cwd: overlay.cwd || process.cwd(),
       // Every turn is a fresh process; connecting claude.ai account connectors adds ~2s
       // of startup. Local MCP servers still load; set the variable to "true" to opt back in.
-      env: { ENABLE_CLAUDEAI_MCP_SERVERS: "false", ...childProcessEnv(this.env) },
+      env: { ENABLE_CLAUDEAI_MCP_SERVERS: "false", ...childProcessEnv(this.env), CLAUDE_CONFIG_DIR: this.configDir },
       stdio: ["ignore", "pipe", "pipe"]
     });
     const run: ClaudeRun = {

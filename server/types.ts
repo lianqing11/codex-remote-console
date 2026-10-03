@@ -148,6 +148,8 @@ export type AgentCapabilities = {
   steering: boolean;
   images: boolean;
   fork: boolean;
+  forkAtTurn?: boolean;
+  forkDiagnostic?: string;
   compact: boolean;
   plugins: boolean;
   skills: boolean;

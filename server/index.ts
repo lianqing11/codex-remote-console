@@ -12,6 +12,7 @@ import { clipCodexHistory } from "./historyOutput";
 import { requestWithWarmPool, WarmThreadPool } from "./codex/warmThreadPool";
 import { AgentQueue, AgentQueueStore, type AgentQueueItem } from "./agentQueue";
 import { ClaudeProvider } from "./providers/claude";
+import { SessionForks } from "./sessionFork";
 import { CursorProvider } from "./providers/cursor";
 import {
   cursorCompletionNotification,
@@ -70,6 +71,7 @@ const streamProviders = {
 } as const;
 const claudeFeishuSource = { id: "claude", label: "Claude Code" } as const;
 const uploadStore = new UploadStore();
+const sessionForks = new SessionForks();
 const pendingQueueRequests = new Map<string | number, { provider: "codex"; threadId: string }>();
 
 const agentQueue = new AgentQueue(new AgentQueueStore(), {
@@ -248,17 +250,43 @@ gateway.subscribe((event) => {
   });
 });
 
-async function handleProviderRequest(provider: AgentProviderId, method: string, params: unknown) {
+async function rawProviderRequest(provider: AgentProviderId, method: string, params: unknown) {
   if (provider === "codex") return codexRequest(method, params);
   const stream = streamProviders[provider];
   if (!stream) throw new Error(`Unsupported provider: ${provider}`);
   return stream.handle(method, params);
 }
 
+function forkQueueBusy(key: string) {
+  return agentQueue.snapshot().items.some(item => item.threadKey === key && ["queued", "dispatching", "running", "waiting_for_input"].includes(item.status))
+    || [...pendingQueueRequests.values()].some(item => `${item.provider}:${item.threadId}` === key);
+}
+
+async function handleProviderRequest(provider: AgentProviderId, method: string, params: unknown) {
+  const input = (params && typeof params === "object" ? params : {}) as Record<string, unknown>;
+  if ((method === "thread/fork" || method === "session/fork") && input.ephemeral && provider !== "codex") throw new Error("Temporary side sessions are only supported by Codex.");
+  if ((method === "thread/fork" || method === "session/fork") && !input.ephemeral) {
+    const result = await sessionForks.fork(provider, input, rawProviderRequest, forkQueueBusy);
+    providerSnapshotCache.invalidate();
+    return result;
+  }
+  const run = async () => {
+    const result = await rawProviderRequest(provider, method, params);
+    if (["turn/start", "run/start"].includes(method)) sessionForks.applied(provider, String(input.threadId || input.sessionId));
+    if (["thread/archive", "session/archive", "thread/unarchive", "session/unarchive"].includes(method)) sessionForks.archived(provider, String(input.threadId || input.sessionId), method.endsWith("/archive"));
+    if (method === "thread/list") return sessionForks.list(provider, input, result, rawProviderRequest);
+    return sessionForks.enrich(provider, result);
+  };
+  if (["turn/start", "run/start", "thread/archive", "session/archive", "thread/name/set", "session/rename"].includes(method)) {
+    return sessionForks.locks.run(`${provider}:${input.threadId || input.sessionId}`, run);
+  }
+  return run();
+}
+
 async function executeQueueItem(item: AgentQueueItem) {
   if (item.provider === "cursor") {
     agentQueue.markStage(item.id, "startRequestedAt");
-    const result = await cursorProvider.handle("run/start", {
+    const result = await handleProviderRequest("cursor", "run/start", {
       sessionId: item.threadId,
       prompt: item.text,
       ...item.turnParams
@@ -389,6 +417,7 @@ async function codexProviderSnapshot(): Promise<AgentProviderSnapshot> {
       steering: true,
       images: true,
       fork: true,
+      forkAtTurn: true,
       compact: true,
       plugins: true,
       skills: true,
@@ -456,7 +485,7 @@ const providerSnapshotCache = snapshotCache(async () => {
   const [codex, cursor, claude] = await Promise.all([
     codexProviderSnapshot(), cursorProvider.getSnapshot(), claudeProvider.getSnapshot()
   ]);
-  return { codex, cursor, claude };
+  return { codex: sessionForks.enrich("codex", codex), cursor: sessionForks.enrich("cursor", cursor), claude: sessionForks.enrich("claude", claude) };
 });
 function providersSnapshot() { return providerSnapshotCache.get(); }
 
@@ -681,7 +710,7 @@ async function handleBrowserMessage(ws: WebSocket, raw: string) {
   }
 
   if (message.type === "queue:enqueue") {
-    const item = agentQueue.enqueue(message.item);
+    const item = await sessionForks.locks.run(`${message.item.provider}:${message.item.threadId}`, () => agentQueue.enqueue(message.item));
     // enqueue() already broadcasts the committed snapshot to every client.
     // Keep the acknowledgement small so the composer does not parse the same
     // full queue twice before it can show that the task was saved.
@@ -700,7 +729,7 @@ async function handleBrowserMessage(ws: WebSocket, raw: string) {
   }
 
   if (message.type === "queue:retry") {
-    send(ws, { type: "reply", requestId: message.requestId, ok: true, result: agentQueue.retry(message.queueId) });
+    send(ws, { type: "reply", requestId: message.requestId, ok: true, result: await sessionForks.locks.run(agentQueue.snapshot().items.find(item => item.id === message.queueId)?.threadKey || message.queueId, () => agentQueue.retry(message.queueId)) });
     return;
   }
 
@@ -710,7 +739,7 @@ async function handleBrowserMessage(ws: WebSocket, raw: string) {
   }
 
   if (message.type === "queue:resume") {
-    send(ws, { type: "reply", requestId: message.requestId, ok: true, result: agentQueue.resumeThread(message.threadKey) });
+    send(ws, { type: "reply", requestId: message.requestId, ok: true, result: await sessionForks.locks.run(message.threadKey, () => agentQueue.resumeThread(message.threadKey)) });
     return;
   }
 
@@ -733,7 +762,7 @@ async function handleBrowserMessage(ws: WebSocket, raw: string) {
   }
 
   if (message.type === "codex:request") {
-    const result = await codexRequest(message.method, await resolveUploadedInputs(message.params, uploadStore));
+    const result = await handleProviderRequest("codex", message.method, await resolveUploadedInputs(message.params, uploadStore));
     send(ws, { type: "reply", requestId: message.requestId, ok: true, result });
     return;
   }
