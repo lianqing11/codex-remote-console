@@ -19,12 +19,16 @@ export type ThreadItem = {
   [key: string]: unknown;
 };
 
+/** A completed turn whose work-log items the server holds back until it is expanded. */
+export type WorkLogSummary = { turnId: string; updates: number; actions: number; reasoning: number };
+
 export type Turn = {
   id: string;
   items: ThreadItem[];
   status: unknown;
   startedAt?: number | null;
   completedAt?: number | null;
+  workLog?: WorkLogSummary;
 };
 
 export type ThreadRuntimeMetadata = {
@@ -43,6 +47,9 @@ export type TurnGroup = {
   completedAt?: number | null;
   updatedAt?: number | null;
   pending?: boolean;
+  workLog?: WorkLogSummary;
+  /** Steps fetched for a deferred work log; refreshes without them keep these. */
+  loadedWorkLog?: string[];
 };
 
 export type DisplayTurn = TurnGroup & {
@@ -198,6 +205,16 @@ export function assistantMessagePhase(item: Pick<ThreadItem, "type" | "phase"> &
  * A completed Plan turn promotes its final plan payload while interrupted drafts
  * remain traceable in the Work log.
  */
+export function workLogCounts(items: ThreadItem[]) {
+  const counts = { updates: 0, actions: 0, reasoning: 0 };
+  for (const item of items) {
+    if (isAssistantMessageItem(item) || item.type === "plan") counts.updates += 1;
+    else if (item.type === "reasoning") counts.reasoning += 1;
+    else counts.actions += 1;
+  }
+  return counts;
+}
+
 export function partitionTurnItems(
   items: ThreadItem[],
   active = false,

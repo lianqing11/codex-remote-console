@@ -3,7 +3,7 @@
 import { memo, useDeferredValue, useMemo, useRef } from "react";
 import { Sparkles } from "lucide-react";
 import type { ProviderId } from "./sessionRuntime";
-import { nowSeconds, isUserMessageItem, reuseDisplayTurns, shouldShowPendingPrompt, type DisplayTurn, type ThreadItem, type TurnGroup } from "./threadModel";
+import { nowSeconds, isUserMessageItem, reuseDisplayTurns, shouldShowPendingPrompt, type DisplayTurn, type ThreadItem, type TurnGroup, type WorkLogSummary } from "./threadModel";
 import { useThreadTranscript } from "./threadViewStore";
 import { TurnPanel, type GatewayDiagnostic, type ProjectDiff } from "./conversationViews";
 
@@ -98,6 +98,7 @@ type ConversationPaneProps = {
   diagnostic: GatewayDiagnostic | null;
   onOpenDiff?: (diff: ProjectDiff) => void;
   onForkTurn?: (turnId: string) => void;
+  onLoadWorkLog?: (threadKey: string, turnId: string, workLog: WorkLogSummary) => Promise<void>;
   forkDisabledReason?: string;
   wsOnline: boolean;
   startProviders?: StartProviderOption[];
@@ -119,7 +120,7 @@ export const ConversationPane = memo(function ConversationPane({
   historyLimit,
   onShowAllHistory,
   diagnostic,
-  onOpenDiff, onForkTurn, forkDisabledReason,
+  onOpenDiff, onForkTurn, forkDisabledReason, onLoadWorkLog,
   wsOnline,
   startProviders = [],
   selectedProvider,
@@ -130,6 +131,9 @@ export const ConversationPane = memo(function ConversationPane({
   onChooseDirectory
 }: ConversationPaneProps) {
   const transcript = useThreadTranscript(threadKey);
+  const loadWorkLog = useMemo(() => onLoadWorkLog
+    ? (turnId: string, workLog: WorkLogSummary) => onLoadWorkLog(threadKey, turnId, workLog)
+    : undefined, [onLoadWorkLog, threadKey]);
   const renderedItems = useDeferredValue(transcript.items);
   const previousRoundsRef = useRef<DisplayTurn[]>([]);
   const previousThreadKeyRef = useRef(threadKey);
@@ -230,6 +234,7 @@ export const ConversationPane = memo(function ConversationPane({
                 key={turn.id}
                 onOpenDiff={onOpenDiff}
                 onForkTurn={onForkTurn}
+                onLoadWorkLog={loadWorkLog}
                 forkDisabledReason={forkDisabledReason}
                 provider={provider}
                 turn={turn}

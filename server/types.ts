@@ -56,6 +56,13 @@ export type BrowserMessage =
       threadKey: string;
     }
   | {
+      type: "history:workLog";
+      requestId: string;
+      provider: AgentProviderId;
+      threadId: string;
+      turnId: string;
+    }
+  | {
       type: "agent:request";
       requestId: string;
       provider: AgentProviderName;

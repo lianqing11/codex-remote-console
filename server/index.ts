@@ -9,6 +9,7 @@ import { allowLoginAttempt, clearSessionCookie, isAuthenticated, authEnabled, re
 import { createCodexGateway } from "./codexGateway";
 import { enrichCodexThreadRuntime } from "./codex/threadRuntime";
 import { clipCodexHistory } from "./historyOutput";
+import { deferWorkLogs, readWorkLog } from "./workLog";
 import { requestWithWarmPool, WarmThreadPool } from "./codex/warmThreadPool";
 import { AgentQueue, AgentQueueStore, type AgentQueueItem } from "./agentQueue";
 import { ClaudeProvider } from "./providers/claude";
@@ -275,6 +276,7 @@ async function handleProviderRequest(provider: AgentProviderId, method: string, 
     if (["turn/start", "run/start"].includes(method)) sessionForks.applied(provider, String(input.threadId || input.sessionId));
     if (["thread/archive", "session/archive", "thread/unarchive", "session/unarchive"].includes(method)) sessionForks.archived(provider, String(input.threadId || input.sessionId), method.endsWith("/archive"));
     if (method === "thread/list") return sessionForks.list(provider, input, result, rawProviderRequest);
+    if (method === "thread/read" || method === "thread/resume") return deferWorkLogs(provider, sessionForks.enrich(provider, result));
     return sessionForks.enrich(provider, result);
   };
   if (["turn/start", "run/start", "thread/archive", "session/archive", "thread/name/set", "session/rename"].includes(method)) {
@@ -745,6 +747,14 @@ async function handleBrowserMessage(ws: WebSocket, raw: string) {
 
   if (message.type === "queue:clear") {
     send(ws, { type: "reply", requestId: message.requestId, ok: true, result: agentQueue.clearThread(message.threadKey) });
+    return;
+  }
+
+  if (message.type === "history:workLog") {
+    const { provider, threadId, turnId } = message;
+    const items = await readWorkLog(provider, threadId, turnId,
+      () => rawProviderRequest(provider, "thread/read", { threadId, sessionId: threadId, includeTurns: true }));
+    send(ws, { type: "reply", requestId: message.requestId, ok: true, result: { items } });
     return;
   }
 

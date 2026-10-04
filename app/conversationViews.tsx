@@ -14,8 +14,10 @@ import {
   isUserMessageItem,
   partitionTurnItems,
   statusLabel,
+  workLogCounts,
   type DisplayTurn,
-  type ThreadItem
+  type ThreadItem,
+  type WorkLogSummary
 } from "./threadModel";
 
 export const ProjectDiffPanel = dynamic(() => import("./CodeDiff").then(module => module.ProjectDiffPanel), { loading: () => <p className="muted">Loading changes…</p> });
@@ -233,7 +235,7 @@ export const TurnPanel = memo(function TurnPanel({
   active,
   defaultOpen,
   diagnostic,
-  onOpenDiff, onForkTurn, forkDisabledReason,
+  onOpenDiff, onForkTurn, forkDisabledReason, onLoadWorkLog,
   provider,
   turn
 }: {
@@ -243,6 +245,7 @@ export const TurnPanel = memo(function TurnPanel({
   onOpenDiff?: (diff: ProjectDiff) => void;
   onForkTurn?: (turnId: string) => void;
   forkDisabledReason?: string;
+  onLoadWorkLog?: (turnId: string, workLog: WorkLogSummary) => Promise<void>;
   provider: ProviderId;
   turn: DisplayTurn;
 }) {
@@ -324,12 +327,15 @@ export const TurnPanel = memo(function TurnPanel({
       {open ? (
         <div className="turnBody" ref={bodyRef}>
           {userItem ? <MessageItem item={userItem} key={userItem.id} provider={provider} /> : null}
-          {workItems.length ? (
+          {/* A deferred log mounts with its answer, or it would start open on a not-yet-rendered turn. */}
+          {workItems.length || (turn.workLog && finalItems.length) ? (
             <TurnWorkLog
               active={active || Boolean(turn.pending)}
               hasFinalAnswer={finalItems.length > 0}
               items={workItems}
               provider={provider}
+              summary={turn.workLog}
+              onLoad={turn.workLog && onLoadWorkLog ? () => onLoadWorkLog(turn.id, turn.workLog!) : undefined}
             />
           ) : null}
           {diagnostic ? (
@@ -379,23 +385,17 @@ export const TurnPanel = memo(function TurnPanel({
   current.defaultOpen === next.defaultOpen &&
   current.diagnostic === next.diagnostic &&
   current.onOpenDiff === next.onOpenDiff &&
+  current.onLoadWorkLog === next.onLoadWorkLog &&
+  current.turn.workLog?.turnId === next.turn.workLog?.turnId &&
   current.provider === next.provider &&
   sameDisplayTurn(current.turn, next.turn));
 
-function workLogCounts(items: ThreadItem[]) {
-  let updates = 0;
-  let reasoning = 0;
-  let actions = 0;
-  for (const item of items) {
-    if (isAssistantMessageItem(item) || item.type === "plan") updates += 1;
-    else if (item.type === "reasoning") reasoning += 1;
-    else actions += 1;
-  }
+function workLogLabel({ updates, actions, reasoning }: { updates: number; actions: number; reasoning: number }) {
   return [
     updates ? `${updates} update${updates === 1 ? "" : "s"}` : "",
     actions ? `${actions} action${actions === 1 ? "" : "s"}` : "",
     reasoning ? `${reasoning} reasoning` : ""
-  ].filter(Boolean);
+  ].filter(Boolean).join(" · ");
 }
 
 const workLogPageSize = 60;
@@ -404,25 +404,36 @@ function TurnWorkLog({
   active,
   hasFinalAnswer,
   items,
-  provider
+  provider,
+  summary,
+  onLoad
 }: {
   active: boolean;
   hasFinalAnswer: boolean;
   items: ThreadItem[];
   provider: ProviderId;
+  summary?: WorkLogSummary;
+  onLoad?: () => Promise<void>;
 }) {
   const [open, setOpen] = useState(active || !hasFinalAnswer);
   // Long agent turns have hundreds of steps; render the latest ones first.
   const [shown, setShown] = useState(workLogPageSize);
   const hidden = Math.max(0, items.length - shown);
   const wasActiveRef = useRef(active);
-  const counts = workLogCounts(items);
+  // Deferred logs show the server's counts until their steps are fetched on first open.
+  const counts = workLogLabel(items.length || !summary ? workLogCounts(items) : summary);
+  const [loadError, setLoadError] = useState("");
+  const loading = open && !items.length && Boolean(onLoad) && !loadError;
 
   useEffect(() => {
     if (active) setOpen(true);
     else if (wasActiveRef.current && hasFinalAnswer) setOpen(false);
     wasActiveRef.current = active;
   }, [active, hasFinalAnswer]);
+
+  useEffect(() => {
+    if (loading) onLoad!().catch((error) => setLoadError(error instanceof Error ? error.message : String(error)));
+  }, [loading]);
 
   return (
     <details
@@ -435,12 +446,14 @@ function TurnWorkLog({
           <ListTree aria-hidden="true" size={14} />
           <strong>Work log</strong>
         </span>
-        <span className="turnWorkLogCounts">{counts.join(" · ")}</span>
+        <span className="turnWorkLogCounts">{counts}</span>
         {active ? <span className="turnWorkLogLive"><span className="pulseDot" />Live</span> : null}
         <ChevronRight aria-hidden="true" className="turnWorkLogChevron" size={14} />
       </summary>
       {open ? (
         <div className="turnWorkLogBody">
+          {loading ? <p className="muted">Loading steps…</p> : null}
+          {loadError ? <p className="errorText" role="alert">{loadError} <button className="historyMoreButton" type="button" onClick={() => setLoadError("")}>Retry</button></p> : null}
           {hidden ? (
             <button className="historyMoreButton" type="button" onClick={() => setShown((count) => count + workLogPageSize)}>
               Show {Math.min(workLogPageSize, hidden)} earlier steps · {hidden} hidden

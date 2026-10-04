@@ -162,10 +162,12 @@ import {
   uniqueItems,
   type Thread,
   type ThreadItem,
-  type Turn
+  type Turn,
+  type WorkLogSummary
 } from "./threadModel";
 import {
   applyItemsFromTurns,
+  applyWorkLog,
   clearPendingPrompt,
   discardThreadView,
   getThreadViewState,
@@ -1724,6 +1726,11 @@ export default function Home() {
     },
     [call, providerProtocolEnabled]
   );
+
+  const loadWorkLog = useCallback(async (key: string, turnId: string, workLog: WorkLogSummary) => {
+    const { items } = await call({ type: "history:workLog", provider: providerFromThreadKey(key), threadId: nativeThreadId(key), turnId: workLog.turnId });
+    applyWorkLog(key, turnId, items);
+  }, [call]);
 
   const sessionAgent = useCallback(
     (method: string, params?: unknown, provider: ProviderId = selectedProvider) => agent(provider, method, params),
@@ -5309,6 +5316,7 @@ export default function Home() {
           <ConversationPane
             onForkTurn={currentCapabilities.forkAtTurn ? (turnId) => { if (selectedThread) void forkThread(selectedThread, turnId).catch(error => setNotice(error.message, "error")); } : undefined}
             forkDisabledReason={selectedThread ? forkReason(selectedThread) : ""}
+            onLoadWorkLog={loadWorkLog}
             threadKey={currentThreadKey}
             provider={selectedThreadProvider}
             providerLabel={providerName(selectedProvider)}

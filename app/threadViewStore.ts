@@ -243,6 +243,14 @@ export function applyItemsFromTurns(threadId: string, turns: Turn[]) {
       nextItems[item.id] = item;
       nextItemOrder.push(item.id);
       itemIds.push(item.id);
+      // A refresh without a deferred work log keeps the steps already loaded, right after the prompt.
+      if (!turn.workLog || !isUserMessageItem(item)) continue;
+      for (const id of currentTurns[turn.id]?.loadedWorkLog || []) {
+        if (!currentItems[id] || nextItems[id]) continue;
+        nextItems[id] = currentItems[id];
+        nextItemOrder.push(id);
+        itemIds.push(id);
+      }
     }
     appendPreservedDiffs(turn.id, itemIds);
     if (turn.id !== turns[index].id) appendPreservedDiffs(turns[index].id, itemIds);
@@ -252,7 +260,8 @@ export function applyItemsFromTurns(threadId: string, turns: Turn[]) {
       status: turn.status,
       startedAt: turn.startedAt,
       completedAt: turn.completedAt,
-      updatedAt: turn.completedAt || turn.startedAt || null
+      updatedAt: turn.completedAt || turn.startedAt || null,
+      ...(turn.workLog ? { workLog: turn.workLog, loadedWorkLog: currentTurns[turn.id]?.loadedWorkLog } : {})
     };
     nextTurnOrder.push(turn.id);
   }
@@ -272,6 +281,24 @@ export function applyItemsFromTurns(threadId: string, turns: Turn[]) {
   setItemOrderForThread(threadId, (current) => (sameIds(current, nextItemOrder) ? current : nextItemOrder));
   setTurnsForThread(threadId, (current) => reuseUnchanged(current, nextTurns));
   setTurnOrderForThread(threadId, (current) => (sameIds(current, nextTurnOrder) ? current : nextTurnOrder));
+}
+
+/** Fetched work-log steps go right after the turn's prompt, in their original order. */
+export function applyWorkLog(threadId: string, turnId: string, items: ThreadItem[]) {
+  const turn = state.turnsByThread[threadId]?.[turnId];
+  if (!turn || !items.length) return;
+  const current = state.itemsByThread[threadId] || EMPTY_ITEMS;
+  const anchor = turn.itemIds.find((id) => current[id] && isUserMessageItem(current[id]));
+  const ids = items.map((item) => item.id).filter((id) => !turn.itemIds.includes(id));
+  const insertAfter = (order: string[]) => {
+    const next = order.filter((id) => !ids.includes(id));
+    const at = anchor ? next.indexOf(anchor) + 1 : next.indexOf(turn.itemIds[0]);
+    next.splice(at < 0 ? next.length : at, 0, ...ids);
+    return next;
+  };
+  setItemsForThread(threadId, (existing) => ({ ...existing, ...Object.fromEntries(items.map((item) => [item.id, item])) }));
+  setItemOrderForThread(threadId, insertAfter);
+  setTurnsForThread(threadId, (existing) => ({ ...existing, [turnId]: { ...turn, itemIds: insertAfter(turn.itemIds), loadedWorkLog: items.map((item) => item.id) } }));
 }
 
 export function threadViewHasConversationHistory(threadId: string) {

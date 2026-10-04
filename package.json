@@ -73,7 +73,7 @@
     "test:playwright-cursor-agent": "python scripts/playwrightCursorAgent.py",
     "test:playwright-single-message": "python scripts/playwrightSingleMessage.py",
     "test:cleanup-smoke": "tsx scripts/cleanupSmokeSessions.ts",
-    "test:all": "npm run test:slash && npm run test:diff && npm run test:project && npm run test:project-ui && npm run test:uploads && npm run test:gateway && npm run test:runtime && npm run test:session-execution && npm run test:thread-runtime && npm run test:codex-usage && npm run test:cursor-usage && npm run test:agent-queue && npm run test:queue-ui && npm run test:fleet && npm run test:thread-model && npm run test:plan-worklog && npm run test:thread-view-store && npm run test:server-env && npm run test:feishu && npm run test:cursor-feishu && npm run test:warm-pool && npm run test:provider-ui && npm run test:provider-protocol && npm run test:auth-isolation && npm run test:session-title && npm run test:cursor && npm run test:claude && npm run test:file-context && npm run test:approval && npm run test:thread-notifications && npm run test:session-experience && npm run test:appearance && npm run test:snapshots && npm run test:fork",
+    "test:all": "npm run test:slash && npm run test:diff && npm run test:project && npm run test:project-ui && npm run test:uploads && npm run test:gateway && npm run test:runtime && npm run test:session-execution && npm run test:thread-runtime && npm run test:codex-usage && npm run test:cursor-usage && npm run test:agent-queue && npm run test:queue-ui && npm run test:fleet && npm run test:thread-model && npm run test:plan-worklog && npm run test:thread-view-store && npm run test:server-env && npm run test:feishu && npm run test:cursor-feishu && npm run test:warm-pool && npm run test:provider-ui && npm run test:provider-protocol && npm run test:auth-isolation && npm run test:session-title && npm run test:cursor && npm run test:claude && npm run test:file-context && npm run test:approval && npm run test:thread-notifications && npm run test:session-experience && npm run test:appearance && npm run test:snapshots && npm run test:fork && npm run test:work-log",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm run build",
     "check:proxy": "npm run typecheck && npm run build:proxy",
@@ -83,6 +83,7 @@
     "test:snapshots": "tsx scripts/snapshotCache.test.ts",
     "test:playwright-appearance": "python scripts/playwrightAppearanceConnection.py",
     "test:fork": "NODE_NO_WARNINGS=1 tsx scripts/sessionFork.test.ts",
+    "test:work-log": "tsx scripts/workLog.test.ts",
     "test:fork-live": "NODE_NO_WARNINGS=1 tsx scripts/sessionForkSmoke.ts --live",
     "test:fork-protocol": "NODE_NO_WARNINGS=1 tsx scripts/sessionForkProtocolSmoke.ts",
     "test:playwright-fork": "python scripts/playwrightSessionFork.py"
