@@ -2,10 +2,10 @@
 import { forkSession } from "@anthropic-ai/claude-agent-sdk";
 import { stat, rm } from "node:fs/promises";
 import path from "node:path";
-const [sourceId, cwd, title, sourceFile] = process.argv.slice(2);
+const [sourceId, cwd, title, sourceFile, upToMessageId] = process.argv.slice(2);
 try {
   const before = await stat(sourceFile);
-  const result = await forkSession(sourceId, { dir: cwd, title });
+  const result = await forkSession(sourceId, { dir: cwd, title, ...(upToMessageId ? { upToMessageId } : {}) });
   const after = await stat(sourceFile);
   if (before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
     await rm(path.join(path.dirname(sourceFile), `${result.sessionId}.jsonl`), { force: true });

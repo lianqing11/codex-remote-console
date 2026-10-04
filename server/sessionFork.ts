@@ -2,6 +2,7 @@ import { mkdirSync, chmodSync } from "node:fs";
 import path from "node:path";
 import { stat } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
+import { canonicalClaudeTurns, type ClaudeQueuedTurn } from "../app/claudeTurnIdentity";
 import type { AgentProviderId } from "./types";
 
 /** Also used for enqueue/start: an idle check and snapshot form one operation. */
@@ -77,13 +78,13 @@ export class SessionForks {
     for (const key of ["data", "sessions", "threads"]) if (Array.isArray(next[key])) next[key] = next[key].map(decorate);
     return next;
   }
-  async fork(provider: AgentProviderId, input: Record<string, unknown>, request: Request, busy: (key: string) => boolean) {
+  async fork(provider: AgentProviderId, input: Record<string, unknown>, request: Request, busy: (key: string) => boolean, queueRuns: (key: string) => ClaudeQueuedTurn[] = () => []) {
     const sourceId = String(input.threadId || input.sessionId || "");
     const requestId = String(input.forkRequestId || "");
     const turnId = input.lastTurnId == null ? null : String(input.lastTurnId);
     if (!/^[\w:-]{1,200}$/.test(sourceId) || !/^[\w:-]{8,200}$/.test(requestId)) throw new Error("A valid source session and fork request ID are required.");
     if (input.ephemeral || input.beforeTurnId || input.path) throw new Error("Use the persistent fork interface with an optional lastTurnId.");
-    if (turnId && provider !== "codex") throw new Error("Historical turn forks are only supported by Codex.");
+    if (turnId && provider === "cursor") throw new Error("Historical turn forks are not supported by Cursor.");
     return this.locks.run(`${provider}:${sourceId}`, async () => {
       const prior = this.db.prepare("SELECT * FROM forks WHERE request_id=?").get(requestId) as ForkRow | undefined;
       if (prior && (prior.provider !== provider || prior.source_id !== sourceId || prior.turn_id !== turnId)) throw new Error("Fork request ID was already used for a different source.");
@@ -97,7 +98,10 @@ export class SessionForks {
       const turns: any[] = Array.isArray(thread.turns) ? thread.turns : [];
       const transcript = source.transcript || thread.transcript || [];
       if (!turns.some(t => t.items?.length) && !transcript.length) throw new Error("An empty session cannot be forked.");
-      if (turnId && !turns.some(t => t.id === turnId && (typeof t.status === "string" ? t.status : t.status?.type) === "completed")) throw new Error("Select a completed turn in this session.");
+      // The browser names Claude turns by console run ID where known; map back to the transcript turn.
+      const turnIds = provider === "claude" ? canonicalClaudeTurns(turns, queueRuns(`${provider}:${sourceId}`)).map(t => t.id) : turns.map(t => t.id);
+      const turn = turnId ? turns[turnIds.indexOf(turnId)] : null;
+      if (turnId && (typeof turn?.status === "string" ? turn.status : turn?.status?.type) !== "completed") throw new Error("Select a completed turn in this session.");
       const sourceVersion = provider === "codex" && thread.path ? await stat(thread.path) : null;
       const createdAt = Date.now() / 1000;
       this.db.prepare("INSERT INTO forks (request_id,provider,source_id,turn_id,target_id,created_at) VALUES (?,?,?,?,NULL,?)").run(requestId, provider, sourceId, turnId, createdAt);
@@ -105,7 +109,7 @@ export class SessionForks {
       try {
         const title = `${thread.name || thread.title || thread.preview?.slice(0, 80) || "Session"} · fork`;
         result = await request(provider, "thread/fork", {
-          threadId: sourceId, sessionId: sourceId, ...(turnId ? { lastTurnId: turnId } : {}),
+          threadId: sourceId, sessionId: sourceId, ...(turn ? { lastTurnId: turn.id } : {}),
           title, ephemeral: false, excludeTurns: false, deferGoalContinuation: true,
           // Never inherit the browser's unrelated global settings.
           ...(provider === "codex" ? {

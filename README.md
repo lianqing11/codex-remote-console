@@ -40,11 +40,11 @@ The Files workspace currently provides browsing, previews, uploads, and diffs. A
 
 ## Fork a conversation
 
-Use **分叉会话** in the session menu or chat header, or type `/fork`. The new session inherits the conversation and runtime settings, opens immediately, and waits for your next message. Codex also offers **从这里分叉** inside a completed round, including that round in the branch.
+Use **Fork session** in the session menu, the top bar (the Tools sheet on phones), or type `/fork`. The new session inherits the conversation and runtime settings, opens immediately, and waits for your next message. Codex and Claude also show **Fork** in the header of each completed round; the branch keeps that round and everything before it.
 
 Branches share project files. They have independent follow-up messages, drafts and task queues. The source label links back to the parent, and the session list can collapse its children. A source with running tasks, pending input or queued work must become idle before it can be forked.
 
-Cursor native forks are supported only on CLI **2026.09.28-64d2043**. An unknown version disables the entry; an incompatible or damaged store returns an explicit error. Claude uses the pinned Agent SDK only to copy the native transcript; subsequent messages continue through Claude CLI. No model request is sent by the fork operation itself.
+Cursor native forks are supported only on CLI **2026.09.28-64d2043**. An unknown version disables the entry; an incompatible or damaged store returns an explicit error. Claude uses the pinned Agent SDK only to copy the native transcript (cut after the chosen round for a round fork); subsequent messages continue through Claude CLI. No model request is sent by the fork operation itself.
 
 Fork relationships and retry identifiers are stored in `.codex_web/forks.sqlite` (override the directory with `CODEX_WEB_FORK_STATE_DIR`). Preserve this directory with the provider's native sessions when moving or backing up an installation. A completed request can be retried safely after a disconnect or restart. If a provider fails after possibly creating native data, an incomplete request is retained for inspection rather than silently creating duplicates.
 
@@ -60,7 +60,7 @@ Install and authenticate the providers you want to use **as the same OS user tha
 | Runtime controls | Model, reasoning, sandbox, approvals, service tier | Model and execution mode | Provider-specific model/mode controls |
 | Browser approval/input UI | Supported | Not exposed | Not exposed |
 | Fork from conversation end | Supported | Version-gated native adapter | Supported |
-| Fork at a completed round | Supported | Not supported | Not supported |
+| Fork at a completed round | Supported | Not supported | Supported |
 | Switching modes | Session runtime settings | Creates a new empty Cursor session | Keeps the same session |
 
 Switching **providers** always creates a new empty session in the same workspace. Context is not transferred between providers.

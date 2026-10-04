@@ -259,6 +259,26 @@ export function parseClaudeTranscript(raw: string): { turns: ClaudeTurn[]; cwd: 
   return { turns, cwd, preview: title, title: title.slice(0, 80), updatedAt };
 }
 
+/** The fork cut for a turn: its last transcript entry before the next user prompt. */
+export function claudeTurnCutoff(raw: string, turnId: string) {
+  let inTurn = false, cutoff = "";
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let row: Record<string, unknown>;
+    try { row = record(JSON.parse(line)); } catch { continue; }
+    const type = String(row.type || row.role || "");
+    const content = record(row.message).content ?? row.content;
+    const prompt = (type === "user" || type === "human")
+      && !(Array.isArray(content) && content.some((block) => record(block).type === "tool_result"));
+    // Same turn boundaries as parseClaudeTranscript, so turn IDs line up.
+    if (prompt && inTurn) break;
+    if (prompt && row.uuid === turnId) inTurn = true;
+    if (inTurn && typeof row.uuid === "string") cutoff = row.uuid;
+  }
+  if (!cutoff) throw new Error("Select a completed turn in this session.");
+  return cutoff;
+}
+
 export function claudeStreamEvents(
   raw: unknown,
   runId: string,
@@ -428,7 +448,7 @@ export class ClaudeProvider {
         steering: false,
         images: true,
         fork: true,
-        forkAtTurn: false,
+        forkAtTurn: true,
         compact: false,
         plugins: false,
         skills: false,
@@ -598,7 +618,6 @@ export class ClaudeProvider {
   }
 
   private async forkThread(input: Record<string, unknown>) {
-    if (input.lastTurnId) throw new Error("Claude supports full-session forks only.");
     const id = stringParam(input, "threadId");
     if (this.runs.has(id)) throw new Error("Wait for Claude to finish before forking.");
     const source = this.overlays.get(id);
@@ -606,8 +625,10 @@ export class ClaudeProvider {
     const history = await this.readJsonl(source.cwd, id);
     if (!history.turns.length) throw new Error("An empty session cannot be forked.");
     const title = stringParam(input, "title") || `${source.title} · fork`;
+    const turnId = stringParam(input, "lastTurnId");
+    const cutoff = turnId ? claudeTurnCutoff(await readFile(this.jsonlPath(source.cwd, id), "utf8"), turnId) : "";
     const { stdout } = await promisify(execFile)(process.execPath, [
-      fileURLToPath(new URL("./claudeFork.mjs", import.meta.url)), id, source.cwd, title, this.jsonlPath(source.cwd, id)
+      fileURLToPath(new URL("./claudeFork.mjs", import.meta.url)), id, source.cwd, title, this.jsonlPath(source.cwd, id), cutoff
     ], { timeout: 120_000, env: { ...childProcessEnv(this.env), CLAUDE_CONFIG_DIR: this.configDir } }).catch(error => {
       if (String(error.stderr || "").startsWith("FORK_SAFE_RETRY:")) throw Object.assign(new Error(String(error.stderr).slice(16)), { forkSafeToRetry: true });
       throw error;

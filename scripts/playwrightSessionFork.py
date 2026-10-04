@@ -77,7 +77,7 @@ async def main():
             await page.locator(f'.fleetSessionRow[data-session-key="{child_key}"]').first.locator('.fleetSessionMain').click()
             await page.locator('.forkParentLink').wait_for(timeout=30000)
             assert await page.locator('.turnPanel').count() == before
-            if provider == 'codex':
+            if provider in ('codex', 'claude'):
                 if await page.locator('.turnPanel').first.get_attribute('open') is None:
                     await page.locator('.turnPanel').first.locator('summary').first.click()
                 assert await page.get_by_role('button', name='Fork from this turn', exact=True).count() >= 1

@@ -7,7 +7,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { SessionForks } from "../server/sessionFork";
 import { forkCursorStore, decodeCursorMetadata, encodeCursorMetadata, CURSOR_FORK_VERSION } from "../server/providers/cursorFork";
-import { ClaudeProvider, projectSlug } from "../server/providers/claude";
+import { ClaudeProvider, claudeTurnCutoff, projectSlug } from "../server/providers/claude";
 import { orderBranchThreads } from "../app/forkTree";
 import { normalizeThread, type Thread } from "../app/threadModel";
 import { inheritedForkRuntime, defaultRuntimeSettings } from "../app/sessionRuntime";
@@ -153,6 +153,41 @@ async function main() {
   assert.equal(await readFile(path.join(dir, `${parentId}.jsonl`), "utf8"), original);
   const restored = new ClaudeProvider({ configDir, stateDir: path.join(root, "claude-state") });
   assert.equal(((await restored.handle("thread/read", { threadId: fork.thread.id })) as any).thread.turns.length, 1);
+
+  // Turn fork: keep turn 1 through its tool round trip and final answer, drop turn 2.
+  const [toolCall, toolResult, final, u2, a2] = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+  const at = new Date().toISOString(), base = { sessionId: parentId, cwd: root, timestamp: at };
+  const twoTurns = original + [
+    { ...base, type: "assistant", uuid: toolCall, parentUuid: assistant, message: { id: "msg-tool", role: "assistant", type: "message", content: [{ type: "tool_use", id: "tool-1", name: "Bash", input: { command: "ls" } }], model: "test-model" } },
+    { ...base, type: "user", uuid: toolResult, parentUuid: toolCall, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tool-1", content: "file.txt" }] } },
+    { ...base, type: "assistant", uuid: final, parentUuid: toolResult, message: { id: "msg-final", role: "assistant", type: "message", content: [{ type: "text", text: "listed" }], model: "test-model", stop_reason: "end_turn" } },
+    { ...base, type: "user", uuid: u2, parentUuid: final, message: { role: "user", content: "Now banana" } },
+    { ...base, type: "assistant", uuid: a2, parentUuid: u2, message: { id: "msg-2", role: "assistant", type: "message", content: [{ type: "text", text: "banana" }], model: "test-model", stop_reason: "end_turn" } }
+  ].map(row => JSON.stringify(row)).join("\n") + "\n";
+  await writeFile(path.join(dir, `${parentId}.jsonl`), twoTurns);
+  assert.equal(claudeTurnCutoff(twoTurns, u), final, "a turn ends at its last entry, past tool results");
+  assert.equal(claudeTurnCutoff(twoTurns, u2), a2);
+  assert.throws(() => claudeTurnCutoff(twoTurns, toolResult), /completed turn/);
+  const turnFork = await provider.handle("thread/fork", { threadId: parentId, title: "Turn branch", lastTurnId: u }) as any;
+  assert.equal(turnFork.thread.turns.length, 1);
+  const turnClone = await readFile(path.join(dir, `${turnFork.thread.id}.jsonl`), "utf8");
+  assert.ok(turnClone.includes("listed") && !turnClone.includes("banana"));
+
+  // The browser may name a Claude turn by its console run ID; the route maps it back.
+  let claudeForkParams: any = null;
+  const claudeRequest = async (_provider: any, method: string, params: any): Promise<any> => {
+    if (method === "thread/fork") { claudeForkParams = params; return { thread: { id: "claude-child" } }; }
+    return { thread: { id: parentId, status: "idle", turns: [
+      { id: u, status: "completed", startedAt: 100, items: [{ type: "userMessage", content: [{ type: "text", text: "Remember apricot" }] }] },
+      { id: u2, status: "completed", startedAt: 200, items: [{ type: "userMessage", content: [{ type: "text", text: "Now banana" }] }] }
+    ] } };
+  };
+  const claudeForks = new SessionForks(path.join(root, "claude-forks.sqlite"));
+  const run = { runId: "run-2", text: "Now banana", createdAt: 199, updatedAt: 210, status: "completed" as const, timings: {} };
+  await claudeForks.fork("claude", { threadId: parentId, forkRequestId: randomUUID(), lastTurnId: "run-2" }, claudeRequest, () => false, () => [run]);
+  assert.equal(claudeForkParams.lastTurnId, u2);
+  await assert.rejects(claudeForks.fork("claude", { threadId: parentId, forkRequestId: randomUUID(), lastTurnId: "run-unknown" }, claudeRequest, () => false), /completed turn/);
+  claudeForks.close();
 
   const thread = (id: string, parent?: string) => normalizeThread({ id, provider: "codex", forkedFromId: parent, name: id, preview: id, cwd: root, updatedAt: 0, status: { type: "idle" }, turns: [] } as Thread);
   assert.deepEqual(orderBranchThreads([thread("c", "p"), thread("p")], new Set()).map(t => t.nativeId), ["p", "c"]);

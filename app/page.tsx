@@ -441,7 +441,7 @@ const providerCapabilityDefaults: Record<ProviderId, Record<ProviderCapability, 
     approvals: false,
     steer: false,
     fork: false,
-    forkAtTurn: false,
+    forkAtTurn: true,
     compact: false,
     plugins: false,
     skills: false,
@@ -5307,7 +5307,7 @@ export default function Home() {
           ) : null}
           <RunProgress item={queueSnapshot.items.filter((item) => item.threadKey === currentThreadKey).find((item) => ["dispatching", "running", "waiting_for_input"].includes(item.status)) || queueSnapshot.items.filter((item) => item.threadKey === currentThreadKey).at(-1)} active={Boolean(activeTurnId)} />
           <ConversationPane
-            onForkTurn={selectedThreadProvider === "codex" && currentCapabilities.forkAtTurn ? (turnId) => { if (selectedThread) void forkThread(selectedThread, turnId).catch(error => setNotice(error.message, "error")); } : undefined}
+            onForkTurn={currentCapabilities.forkAtTurn ? (turnId) => { if (selectedThread) void forkThread(selectedThread, turnId).catch(error => setNotice(error.message, "error")); } : undefined}
             forkDisabledReason={selectedThread ? forkReason(selectedThread) : ""}
             threadKey={currentThreadKey}
             provider={selectedThreadProvider}

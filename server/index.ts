@@ -266,7 +266,7 @@ async function handleProviderRequest(provider: AgentProviderId, method: string, 
   const input = (params && typeof params === "object" ? params : {}) as Record<string, unknown>;
   if ((method === "thread/fork" || method === "session/fork") && input.ephemeral && provider !== "codex") throw new Error("Temporary side sessions are only supported by Codex.");
   if ((method === "thread/fork" || method === "session/fork") && !input.ephemeral) {
-    const result = await sessionForks.fork(provider, input, rawProviderRequest, forkQueueBusy);
+    const result = await sessionForks.fork(provider, input, rawProviderRequest, forkQueueBusy, key => agentQueue.snapshot().items.filter(item => item.threadKey === key));
     providerSnapshotCache.invalidate();
     return result;
   }
