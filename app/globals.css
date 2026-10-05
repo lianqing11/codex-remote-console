@@ -803,6 +803,37 @@ body.sidebarResizing {
   flex: 1;
 }
 
+.sidebarSessionSearch {
+  margin-bottom: 6px;
+}
+
+.sidebarSessionSearch input {
+  height: 34px;
+}
+
+.sessionSearchHit {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 6px 8px;
+  border-color: transparent;
+  background: transparent;
+  text-align: left;
+}
+
+.sessionSearchHit strong,
+.sessionSearchHit small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessionSearchHit small {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
 .threadHeaderActions {
   display: inline-flex;
   gap: 6px;
@@ -7072,13 +7103,7 @@ html[data-keyboard-open="true"] .composer {
 .turnSummaryMeta .forkTurnButton { display: inline-flex; align-items: center; gap: 4px; min-height: 0; padding: 4px 8px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); font-size: inherit; line-height: inherit; }
 .turnSummaryMeta .forkTurnButton:hover { border-color: var(--a200); color: var(--accent-strong); }
 .turnSummaryMeta .forkTurnButton[aria-disabled="true"] { opacity: 0.5; }
-.forkParentLink { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 180px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 12px; white-space: nowrap; }
-.forkParentLink span { overflow: hidden; text-overflow: ellipsis; }
-.forkParentLink:hover { color: var(--accent-strong); }
 .forkSessionButton[aria-disabled="true"] { opacity: 0.45; }
-.forkSourceLink { grid-column: 1; grid-row: 2; justify-self: start; max-width: calc(100% - 28px); margin: 0 0 5px 28px; padding: 2px 0; border: 0; background: transparent; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
-.forkChildrenToggle { grid-column: 2; grid-row: 2; padding: 4px; font-size: 11px; }
 .fleetSessionRow > .fleetSessionMain { grid-column: 1; grid-row: 1; }
 .fleetSessionRow > .fleetRowMenu { grid-column: 2; grid-row: 1; }
-.fleetSessionRow:has(> .forkSourceLink) { margin-left: 10px; }
-@media (max-width: 760px) { .forkChildrenToggle { min-height: 36px; } .turnSummaryMeta .forkTurnButton { padding: 3px 8px; } }
+@media (max-width: 760px) { .turnSummaryMeta .forkTurnButton { padding: 3px 8px; } }

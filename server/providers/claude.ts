@@ -78,6 +78,7 @@ type Handler = (event: AgentNormalizedEvent) => void;
 
 const defaultClaudeModel = "claude-sonnet-5";
 const defaultEffort = "high";
+const CLAUDE_SYSTEM_RULE = "默认使用简体中文回复用户；用户输入包含中文时必须用中文回复。代码、命令、路径和标识符保持原样。";
 
 const fallbackModels: AgentModelSummary[] = [
   listedModel("claude-sonnet-5", "Sonnet 5", "Most efficient for everyday tasks", ["low", "medium", "high", "xhigh", "max"], true),
@@ -715,7 +716,9 @@ export class ClaudeProvider {
       "--permission-mode",
       mode === "plan" ? "plan" : "acceptEdits",
       "--model",
-      model
+      model,
+      "--append-system-prompt",
+      CLAUDE_SYSTEM_RULE
     ];
     if (effort) args.push("--effort", effort);
     if (overlay.title && overlay.title !== "New session") args.push("--name", overlay.title);

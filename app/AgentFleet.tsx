@@ -31,8 +31,6 @@ type AgentFleetProps = {
   onClose: (threadKey: string) => void;
   onManage: (threadKey: string) => void;
   onFork?: (threadKey: string) => void;
-  onToggleBranches?: (threadKey: string) => void;
-  collapsedBranches?: Set<string>;
 };
 
 function statusCopy(status: FleetStatus, queueCount = 0) {
@@ -77,8 +75,6 @@ export type FleetSessionRowProps = {
   onClose: (threadKey: string) => void;
   onManage: (threadKey: string) => void;
   onFork?: (threadKey: string) => void;
-  onToggleBranches?: (threadKey: string) => void;
-  collapsedBranches?: Set<string>;
 };
 
 export const FleetSessionRow = memo(function FleetSessionRow({
@@ -91,7 +87,7 @@ export const FleetSessionRow = memo(function FleetSessionRow({
   onTogglePin,
   onRename,
   onClose,
-  onManage, onFork, onToggleBranches, collapsedBranches
+  onManage, onFork
 }: FleetSessionRowProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDetailsElement>(null);
@@ -191,8 +187,6 @@ export const FleetSessionRow = memo(function FleetSessionRow({
           </small>
         </span>
       </a>
-      {thread.forkParentKey ? <button className="forkSourceLink" type="button" title={`Forked from ${thread.forkParentTitle}`} onClick={() => onSelect(thread.forkParentKey!)}>↳ {thread.forkParentTitle || "Parent"}</button> : null}
-      {thread.forkChildren && onToggleBranches ? <button className="forkChildrenToggle" type="button" aria-label={`Branches of ${thread.title}`} aria-expanded={!collapsedBranches?.has(thread.key)} onClick={() => onToggleBranches(thread.key)}>{collapsedBranches?.has(thread.key) ? "▸" : "▾"} {thread.forkChildren}</button> : null}
       <details
         className="fleetRowMenu"
         open={menuOpen}
@@ -272,8 +266,6 @@ export const AgentFleet = memo(function AgentFleet(props: AgentFleetProps) {
     onRename: props.onRename,
     onClose: props.onClose,
     onFork: props.onFork,
-    onToggleBranches: props.onToggleBranches,
-    collapsedBranches: props.collapsedBranches,
     onManage: props.onManage
   };
 

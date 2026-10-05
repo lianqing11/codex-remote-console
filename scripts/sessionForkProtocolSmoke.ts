@@ -9,7 +9,7 @@ async function main() {
   const root = process.env.FORK_SMOKE_ROOT;
   if (!root) throw new Error("FORK_SMOKE_ROOT must point to independent live smoke fixtures.");
   const fixtures = JSON.parse(await readFile(path.join(root, "results.json"), "utf8"));
-  const base = process.env.CODING_AGENT_CONSOLE_TEST_URL || "http://127.0.0.1:3042/codex-fork-preview/";
+  const base = process.env.CODING_AGENT_CONSOLE_TEST_URL || "http://127.0.0.1:1818/codex_web_cursor/";
   const login = await fetch(new URL("api/auth/login", base), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: process.env.CODEX_WEB_PASSWORD || process.env.CODEX_WEB_TOKEN }) });
   assert.equal(login.status, 200);
   const cookie = login.headers.get("set-cookie")!.split(";")[0];

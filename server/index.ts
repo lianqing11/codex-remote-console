@@ -263,6 +263,14 @@ function forkQueueBusy(key: string) {
     || [...pendingQueueRequests.values()].some(item => `${item.provider}:${item.threadId}` === key);
 }
 
+// Codex searches natively; Claude and Cursor return every session, so filter them here.
+function searchSessions(result: any, searchTerm: unknown) {
+  const query = typeof searchTerm === "string" ? searchTerm.trim().toLowerCase() : "";
+  if (!query || !Array.isArray(result?.data)) return result;
+  const matches = (thread: any) => [thread.name, thread.title, thread.preview, thread.cwd].some(value => typeof value === "string" && value.toLowerCase().includes(query));
+  return { ...result, data: result.data.filter(matches), ...(Array.isArray(result.threads) ? { threads: result.threads.filter(matches) } : {}) };
+}
+
 async function handleProviderRequest(provider: AgentProviderId, method: string, params: unknown) {
   const input = (params && typeof params === "object" ? params : {}) as Record<string, unknown>;
   if ((method === "thread/fork" || method === "session/fork") && input.ephemeral && provider !== "codex") throw new Error("Temporary side sessions are only supported by Codex.");
@@ -275,7 +283,7 @@ async function handleProviderRequest(provider: AgentProviderId, method: string, 
     const result = await rawProviderRequest(provider, method, params);
     if (["turn/start", "run/start"].includes(method)) sessionForks.applied(provider, String(input.threadId || input.sessionId));
     if (["thread/archive", "session/archive", "thread/unarchive", "session/unarchive"].includes(method)) sessionForks.archived(provider, String(input.threadId || input.sessionId), method.endsWith("/archive"));
-    if (method === "thread/list") return sessionForks.list(provider, input, result, rawProviderRequest);
+    if (method === "thread/list") return sessionForks.list(provider, input, provider === "codex" ? result : searchSessions(result, input.searchTerm), rawProviderRequest);
     if (method === "thread/read" || method === "thread/resume") return deferWorkLogs(provider, sessionForks.enrich(provider, result));
     return sessionForks.enrich(provider, result);
   };

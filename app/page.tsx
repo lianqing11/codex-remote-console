@@ -1,6 +1,5 @@
 "use client";
 
-import { orderBranchThreads } from "./forkTree";
 
 import {
   Archive,
@@ -1244,7 +1243,6 @@ export default function Home() {
   const [forkBusy, setForkBusy] = useState(false);
   const forkBusyRef = useRef(false);
   const forkRequests = useRef(new Map<string, string>());
-  const [collapsedForks, setCollapsedForks] = useState<Set<string>>(() => new Set());
   const [queueSnapshot, setQueueSnapshot] = useState<QueueSnapshot>({ items: [], threads: [] });
   const [queueAction, setQueueAction] = useState<string | null>(null);
   const [composerSubmitting, setComposerSubmitting] = useState(false);
@@ -1277,6 +1275,8 @@ export default function Home() {
   const [sessionManagerThreads, setSessionManagerThreads] = useState<Thread[]>([]);
   const [sessionManagerCursor, setSessionManagerCursor] = useState<string | null>(null);
   const [sessionManagerSearch, setSessionManagerSearch] = useState("");
+  const [sessionSearch, setSessionSearch] = useState("");
+  const [sessionSearchHits, setSessionSearchHits] = useState<Thread[]>([]);
   const [sessionManagerArchived, setSessionManagerArchived] = useState(false);
   const [sessionManagerProviderFilter, setSessionManagerProviderFilter] = useState<ProviderFilter>("all");
   const [sessionManagerLoading, setSessionManagerLoading] = useState(false);
@@ -1395,7 +1395,7 @@ export default function Home() {
     try {
       if (location.session) {
         const existing = threads.find((thread) => providerOf(thread) === location.provider && nativeThreadId(thread) === location.session);
-        await resumeThread(existing || normalizeThread({
+        await openThread(existing || normalizeThread({
           id: location.session, provider: location.provider, cwd: "", name: null,
           preview: "Opening session…", updatedAt: 0, status: { type: "idle" }, turns: []
         }));
@@ -1585,9 +1585,6 @@ export default function Home() {
         key,
         provider,
         title: threadTitle(thread),
-        forkParentKey: thread.forkedFromId ? threadKey(thread.forkedFromId, provider) : undefined,
-        forkParentTitle: thread.forkedFromId ? threadTitle(orderedThreads.find(t => threadKey(t) === threadKey(thread.forkedFromId, provider)) || { ...thread, name: null, preview: thread.forkedFromId }) : undefined,
-        forkChildren: orderedThreads.filter(t => providerOf(t) === provider && t.forkedFromId === nativeThreadId(thread)).length,
         forkDisabledReason: forkReason(thread),
         cwd: thread.cwd,
         directory: directoryLabel(thread.cwd),
@@ -1634,6 +1631,16 @@ export default function Home() {
     [listedThreads, pinnedDirs]
   );
   const threadByKey = useMemo(() => new Map(orderedThreads.map((thread) => [threadKey(thread), thread])), [orderedThreads]);
+  const sessionSearchQuery = sessionSearch.trim().toLowerCase();
+  const localSearchHits = useMemo(
+    () => sessionSearchQuery ? orderedThreads.filter(thread => [threadTitle(thread), thread.preview, thread.cwd].some(value => value?.toLowerCase().includes(sessionSearchQuery))) : [],
+    [orderedThreads, sessionSearchQuery]
+  );
+  // Older sessions beyond the loaded page come from each provider's thread/list search.
+  const remoteSearchHits = useMemo(
+    () => sessionSearchHits.filter(thread => !threadByKey.has(threadKey(thread))).sort(compareThreadsByRecency),
+    [sessionSearchHits, threadByKey]
+  );
   const mcpRecentByServer = useMemo(() => {
     const result: Record<string, Array<{ id: string; tool: string; status: string }>> = {};
     if (!selectedThread) return result;
@@ -1726,6 +1733,19 @@ export default function Home() {
     },
     [call, providerProtocolEnabled]
   );
+  useEffect(() => {
+    setSessionSearchHits([]);
+    if (!sessionSearchQuery || wsState !== "online") return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      const targets = providerOrder.filter(provider => providerAvailable(providerStatus(bootstrapRef.current, provider)));
+      void Promise.allSettled(targets.map(provider => agent(provider, "thread/list", { limit: 50, sortDirection: "desc", searchTerm: sessionSearchQuery, provider })))
+        .then(results => {
+          if (!cancelled) setSessionSearchHits(results.flatMap(result => result.status === "fulfilled" ? normalizeThreads(result.value.data || []) : []));
+        });
+    }, 300);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [agent, sessionSearchQuery, wsState]);
 
   const loadWorkLog = useCallback(async (key: string, turnId: string, workLog: WorkLogSummary) => {
     const { items } = await call({ type: "history:workLog", provider: providerFromThreadKey(key), threadId: nativeThreadId(key), turnId: workLog.turnId });
@@ -1999,7 +2019,7 @@ export default function Home() {
         && cursorThreadMode(thread) === nextMode
       ));
       if (reusable) {
-        await resumeThread(reusable);
+        await openThread(reusable);
         setNotice(`Reused an empty Cursor ${modeLabel(nextMode)} session.`);
         return;
       }
@@ -3074,7 +3094,7 @@ export default function Home() {
 
   async function chooseManagedThread(thread: Thread) {
     const target = sessionManagerArchived ? await restoreManagedThread(thread) : thread;
-    await resumeThread(target);
+    await openThread(target);
     setSessionManagerOpen(false);
   }
 
@@ -3232,12 +3252,13 @@ export default function Home() {
       .catch((error) => setNotice(error instanceof Error ? error.message : String(error), "error"));
   };
 
-  async function resumeThread(thread: Thread) {
+  async function openThread(thread: Thread) {
     const revision = ++selectionRevision.current;
     const connection = connectionGeneration.current;
     const started = performance.now();
-    // Switch immediately. Cached turns stay visible; Codex without cache
-    // loads history from this single resume instead of a follow-up thread/read.
+    // Switch immediately. Cached turns stay visible. Opening only reads: a Codex
+    // resume appends settings to the rollout and bumps the session in Recent, so
+    // resume waits until a message is actually sent.
     const provider = providerOf(thread);
     const key = threadKey(thread);
     const listedThread = normalizeThread(thread);
@@ -3252,16 +3273,11 @@ export default function Home() {
     setMobilePanel(null);
     if (!matchMedia("(max-width: 760px), (any-pointer: coarse) and (max-height: 500px)").matches) window.setTimeout(() => composerRef.current?.focus(), 0);
 
-    const excludeTurns = provider === "codex" && hadCache;
-
     try {
-      // Codex warm-pool short-circuits this to thread/read when already loaded.
-      // Cursor maps resume to session/read and returns the local transcript.
-      const response = await agent(provider, "thread/resume", {
+      const response = await agent(provider, "thread/read", {
         threadId: nativeThreadId(thread),
         provider,
-        excludeTurns,
-        ...runtimeThreadParams(thread.forkedFromId ? inheritedForkRuntime(runtimeSettingsByProvider[provider] || providerRuntimeDefaults(provider), thread) : runtimeSettingsByProvider[provider] || providerRuntimeDefaults(provider))
+        includeTurns: !(provider === "codex" && hadCache)
       });
 
       // Drop the response if the user has switched to a different session in
@@ -3270,7 +3286,6 @@ export default function Home() {
 
       recordConnectionMetric("session restore", started);
       const resumed = normalizeThread({ ...(response.thread as Thread), provider });
-      if (provider === "codex") warmThreadIdsRef.current.add(key);
       selectedThreadIdRef.current = key;
       setSelectedThread((current) => current && threadKey(current) === key ? hydrateListedThread(current, resumed) : hydrateListedThread(thread, resumed));
       const queueTurnId = activeQueueTurns(queueSnapshotRef.current).get(key) || null;
@@ -3322,6 +3337,10 @@ export default function Home() {
       ...(modelOverride ? { model: modelOverride } : {})
     };
 
+    // Opening a session only reads it; Codex must load the thread before a direct turn/start.
+    if (provider === "codex") {
+      await agent(provider, "thread/resume", { threadId: nativeThreadId(threadId), provider, excludeTurns: true, reuseIfUnchanged: true, ...runtimeThreadParams(turnRuntimeSettings) });
+    }
     // Don't block turn/start on git snapshot — snapshot can be slow on large trees.
     const turnPromise = agent(provider, "turn/start", {
       threadId: nativeThreadId(threadId),
@@ -3786,15 +3805,6 @@ export default function Home() {
     return "";
   }
 
-  function toggleForkChildren(key: string) {
-    setCollapsedForks(current => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; });
-  }
-
-  const forkParent = selectedThread?.forkedFromId
-    ? threads.find(t => threadKey(t) === threadKey(selectedThread.forkedFromId, selectedThreadProvider))
-      || normalizeThread({ id: selectedThread.forkedFromId, provider: selectedThreadProvider, cwd: selectedThread.cwd, name: null, preview: "Parent session", updatedAt: 0, status: { type: "idle" }, turns: [] })
-    : null;
-
   // Fork stays tappable while blocked: touch screens never show a disabled button's title.
   function forkSelectedThread() {
     if (!selectedThread) return;
@@ -3842,7 +3852,6 @@ export default function Home() {
       applyItemsFromTurns(key, thread.turns || []);
       updateRuntimeSettings(current => inheritedForkRuntime(current, thread, response), provider);
       setModeOverrideByThread(current => ({ ...current, [key]: thread.runtime?.mode === "plan" || thread.mode === "plan" ? "plan" : thread.mode === "ask" ? "ask" : "default" }));
-      setCollapsedForks(current => { const next = new Set(current); next.delete(threadKey(source)); return next; });
       setWorkspaceView("chat");
       setMobilePanel(null);
       setHistoryLimit(40);
@@ -4055,18 +4064,17 @@ export default function Home() {
   }
 
   const selectFleetThread = useCallback((key: string) => {
-    const branch = orderedThreads.find(candidate => candidate.forkedFromId && threadKey(candidate.forkedFromId, providerOf(candidate)) === key);
-    const thread = threadByKey.get(key) || (branch ? normalizeThread({ id: branch.forkedFromId!, provider: providerOf(branch), cwd: branch.cwd, name: null, preview: "Parent session", updatedAt: 0, status: { type: "idle" }, turns: [] }) : null);
+    const thread = threadByKey.get(key);
     if (!thread) return;
     setWorkspaceView("chat");
     setMobilePanel(null);
-    resumeThread(thread).catch((error) => setNotice(error instanceof Error ? error.message : String(error), "error"));
-  }, [threadByKey, orderedThreads]);
+    openThread(thread).catch((error) => setNotice(error instanceof Error ? error.message : String(error), "error"));
+  }, [threadByKey]);
 
   function selectAdjacentThread(thread: Thread | null) {
     if (!thread) return;
     setWorkspaceView("chat");
-    resumeThread(thread).catch((error) => setNotice(error instanceof Error ? error.message : String(error), "error"));
+    openThread(thread).catch((error) => setNotice(error instanceof Error ? error.message : String(error), "error"));
   }
 
   const renameFleetThread = useCallback((key: string) => {
@@ -4993,8 +5001,6 @@ export default function Home() {
           onClose={closeFleetThread}
           onManage={manageFleetThread}
           onFork={forkFleetThread}
-          onToggleBranches={toggleForkChildren}
-          collapsedBranches={collapsedForks}
         />
 
 	        <section className="threadHeader">
@@ -5035,12 +5041,56 @@ export default function Home() {
 	          </button>
 	        </div>
 	
+        <label className="sessionSearch sidebarSessionSearch">
+          <Search aria-hidden="true" size={15} />
+          <input
+            aria-label="Search sessions"
+            autoComplete="off"
+            name="sidebar-session-search"
+            type="search"
+            value={sessionSearch}
+            onChange={(event) => setSessionSearch(event.target.value)}
+            onKeyDown={(event) => { if (event.key === "Escape") setSessionSearch(""); }}
+            placeholder="Search sessions…"
+          />
+        </label>
+
         <div className="threadList">
           {orderedThreads.length === 0 ? <p className="muted">No sessions yet.</p> : null}
-          {orderedThreads.length > 0 && listedThreads.length === 0 ? <p className="muted">Live sessions stay in Now until they finish.</p> : null}
-          {threadLayout === "recent" ? (
+          {!sessionSearchQuery && orderedThreads.length > 0 && listedThreads.length === 0 ? <p className="muted">Live sessions stay in Now until they finish.</p> : null}
+          {sessionSearchQuery ? (
             <div className="threadGroupItems">
-              {orderBranchThreads(listedThreads, collapsedForks).map((thread) => {
+              {localSearchHits.length + remoteSearchHits.length === 0 ? <p className="muted">No matching sessions.</p> : null}
+              {localSearchHits.map((thread) => {
+                const key = threadKey(thread);
+                const fleetThread = fleetByKey.get(key);
+                if (!fleetThread) return null;
+                return (
+                  <FleetSessionRow
+                    key={key}
+                    thread={fleetThread}
+                    selected={threadKey(selectedThread) === key}
+                    loading={historyLoadingThreadId === key}
+                    showDirectory
+                    onSelect={selectFleetThread}
+                    onTogglePin={togglePinnedThread}
+                    onRename={renameFleetThread}
+                    onClose={closeFleetThread}
+                    onManage={manageFleetThread}
+                    onFork={forkFleetThread}
+                  />
+                );
+              })}
+              {remoteSearchHits.map((thread) => (
+                <button className="sessionSearchHit" key={threadKey(thread)} type="button" title={thread.cwd} onClick={() => openThread(thread).catch((error) => setNotice(error.message, "error"))}>
+                  <strong>{threadTitle(thread)}</strong>
+                  <small>{providerName(providerOf(thread))} · {directoryLabel(thread.cwd)} · {formatTime(thread.updatedAt)}</small>
+                </button>
+              ))}
+            </div>
+          ) : threadLayout === "recent" ? (
+            <div className="threadGroupItems">
+              {listedThreads.map((thread) => {
                 const key = threadKey(thread);
                 const fleetThread = fleetByKey.get(key);
                 const loadingHistory = historyLoadingThreadId === key;
@@ -5058,8 +5108,6 @@ export default function Home() {
                     onClose={closeFleetThread}
                     onManage={manageFleetThread}
           onFork={forkFleetThread}
-          onToggleBranches={toggleForkChildren}
-          collapsedBranches={collapsedForks}
                   />
                 );
               })}
@@ -5138,7 +5186,7 @@ export default function Home() {
                   <>
                     <div className="threadGroupPath" dir="ltr" title={group.cwd} translate="no">{group.cwd}</div>
                     <div className="threadGroupItems">
-                      {orderBranchThreads(group.threads, collapsedForks).map((thread) => {
+                      {group.threads.map((thread) => {
                         const key = threadKey(thread);
                         const fleetThread = fleetByKey.get(key);
                         const loadingHistory = historyLoadingThreadId === key;
@@ -5156,8 +5204,6 @@ export default function Home() {
                             onClose={closeFleetThread}
                             onManage={manageFleetThread}
           onFork={forkFleetThread}
-          onToggleBranches={toggleForkChildren}
-          collapsedBranches={collapsedForks}
                           />
                         );
                       })}
@@ -5222,12 +5268,6 @@ export default function Home() {
                   <span className="topbarPathFull">{selectedThread?.cwd || cwd || "Choose a working directory"}</span>
                   <span className="topbarPathShort"><Folder aria-hidden="true" size={12} />{(selectedThread?.cwd || cwd).split("/").filter(Boolean).pop() || "Directory"}</span>
                 </button>
-                {forkParent ? (
-                  <button className="forkParentLink" type="button" title={`Forked from ${threadTitle(forkParent)}`} onClick={() => void resumeThread(forkParent).catch(error => setNotice(error.message, "error"))}>
-                    <GitFork aria-hidden="true" size={12} />
-                    <span>{forkParent.name || forkParent.id.slice(0, 12)}</span>
-                  </button>
-                ) : null}
                 {selectedThread && sessionExecutionState.phase !== "idle" ? (
                   <span className={`sessionState state-${sessionExecutionState.phase}`}>
                     {threadStatusText(sessionExecutionState.phase)}

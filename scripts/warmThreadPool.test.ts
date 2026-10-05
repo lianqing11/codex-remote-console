@@ -135,6 +135,13 @@ async function main() {
   fastPool.touch("evict-1");
   fastPool.touch("evict-2");
   assert.equal(fastPool.matchesResume("fast", settings), false, "eviction clears remembered settings");
+  const actionPool = new WarmThreadPool(5);
+  calls.length = 0;
+  await requestWithWarmPool(gateway, actionPool, "thread/compact/start", { threadId: "unopened" });
+  assert.deepEqual(calls.filter(call => call.method !== "thread/loaded/list").map(call => call.method), ["thread/resume", "thread/compact/start"], "thread actions load a read-only session first");
+  calls.length = 0;
+  await requestWithWarmPool(gateway, actionPool, "thread/name/set", { threadId: "unopened", name: "x" });
+  assert.deepEqual(calls.map(call => call.method), ["thread/name/set"], "an already loaded session is not resumed again");
   console.log("warmThreadPool.test.ts: ok");
 }
 

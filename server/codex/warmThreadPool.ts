@@ -150,6 +150,8 @@ async function maybeTouchLoaded(gateway: GatewayLike, pool: WarmThreadPool, thre
 
 const ATTACH_METHODS = new Set(["thread/start", "thread/resume", "thread/fork"]);
 const DROP_METHODS = new Set(["thread/unsubscribe", "thread/archive", "thread/delete"]);
+// Opening a session only reads it, so thread actions load it on demand.
+const LOAD_METHODS = new Set(["review/start", "thread/compact/start", "thread/name/set", "thread/memoryMode/set", "thread/backgroundTerminals/clean"]);
 
 /**
  * Keep a bounded set of Codex threads resident in app-server memory.
@@ -195,6 +197,14 @@ export async function requestWithWarmPool(
           reasoningEffort: null
         };
       }
+    }
+  }
+
+  if (LOAD_METHODS.has(method)) {
+    const threadId = threadIdFromParams(params);
+    if (threadId && !pool.has(threadId) && !(await listLoadedThreadIds(gateway)).has(threadId)) {
+      await gateway.request("thread/resume", { threadId, excludeTurns: true, persistExtendedHistory: true });
+      await settleWarmPool(gateway, pool, threadId);
     }
   }
 

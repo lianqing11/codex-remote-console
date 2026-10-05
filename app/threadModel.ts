@@ -300,7 +300,8 @@ export function normalizeThread(thread: Thread): Thread {
     id: threadKey(nativeId, provider),
     nativeId,
     provider,
-    updatedAt: threadTimestamp(thread)
+    // A fork copies the parent's history timestamps; creating it counts as activity for Recent ordering.
+    updatedAt: Math.max(threadTimestamp(thread), epochSeconds(thread.forkedAt))
   };
 }
 

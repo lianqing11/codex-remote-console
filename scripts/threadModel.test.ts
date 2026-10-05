@@ -311,4 +311,6 @@ assert.equal(
   false
 );
 
+assert.equal(normalizeThread({ id: "fork", provider: "claude", forkedAt: 2_000, updatedAt: 1_000, name: null, preview: "", cwd: "/tmp", status: { type: "idle" }, turns: [] }).updatedAt, 2_000, "a fork ranks by its creation time");
+
 console.log("thread model tests passed");

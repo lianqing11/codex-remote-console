@@ -5,7 +5,7 @@ import os
 import pathlib
 from playwright.async_api import async_playwright
 
-URL = os.environ.get("CODING_AGENT_CONSOLE_TEST_URL", "http://127.0.0.1:1818/codex-fork-preview/")
+URL = os.environ.get("CODING_AGENT_CONSOLE_TEST_URL", "http://127.0.0.1:1818/codex_web_cursor/")
 ROOT = pathlib.Path(os.environ["FORK_SMOKE_ROOT"])
 PASSWORD = os.environ.get("CODEX_WEB_PASSWORD") or os.environ.get("CODEX_WEB_TOKEN") or ""
 
@@ -62,21 +62,22 @@ async def main():
             before = await page.locator('.turnPanel').count()
             await fork.click()
             await page.get_by_text('Session forked. Project files are shared.', exact=True).wait_for(timeout=30000)
-            await page.locator('.forkParentLink').wait_for()
             assert await page.locator('.turnPanel').count() == before
             assert await composer.input_value() == ''
             # Native ID comes from the newly selected row, for reload and branch checks.
             child_row = page.locator('.fleetSessionRow.selected').first
             child_key = await child_row.get_attribute('data-session-key')
             assert child_key and child_key != f'{provider}:{parent}'
-            await page.locator('.forkParentLink').click()
+            # Forks are ordinary sessions: no parent link, and the new fork ranks first by recency.
+            assert await page.locator('.forkParentLink').count() == 0
+            assert await page.locator('.threadGroupItems .fleetSessionRow').first.get_attribute('data-session-key') == child_key
+            await page.locator(f'.fleetSessionRow[data-session-key="{provider}:{parent}"]').first.locator('.fleetSessionMain').click()
             assert await composer.input_value() == 'keep-parent-draft'
             await page.locator(f'.fleetSessionRow[data-session-key="{child_key}"]').first.locator('.fleetSessionMain').click()
             await page.reload(wait_until='networkidle')
             await page.locator('.statusPill.online').wait_for(timeout=30000)
             await page.locator(f'.fleetSessionRow[data-session-key="{child_key}"]').first.locator('.fleetSessionMain').click()
-            await page.locator('.forkParentLink').wait_for(timeout=30000)
-            assert await page.locator('.turnPanel').count() == before
+            await page.wait_for_function(f'document.querySelectorAll(".turnPanel").length === {before}', timeout=30000)
             if provider in ('codex', 'claude'):
                 if await page.locator('.turnPanel').first.get_attribute('open') is None:
                     await page.locator('.turnPanel').first.locator('summary').first.click()

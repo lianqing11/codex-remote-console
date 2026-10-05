@@ -42,7 +42,7 @@ The Files workspace currently provides browsing, previews, uploads, and diffs. A
 
 Use **Fork session** in the session menu, the top bar (the Tools sheet on phones), or type `/fork`. The new session inherits the conversation and runtime settings, opens immediately, and waits for your next message. Codex and Claude also show **Fork** in the header of each completed round; the branch keeps that round and everything before it.
 
-Branches share project files. They have independent follow-up messages, drafts and task queues. The source label links back to the parent, and the session list can collapse its children. A source with running tasks, pending input or queued work must become idle before it can be forked.
+Branches share project files. They have independent follow-up messages, drafts and task queues. Each fork is an ordinary top-level session: it enters Recent by its creation time, with no parent link or nesting. A source with running tasks, pending input or queued work must become idle before it can be forked.
 
 Cursor native forks are supported only on CLI **2026.09.28-64d2043**. An unknown version disables the entry; an incompatible or damaged store returns an explicit error. Claude uses the pinned Agent SDK only to copy the native transcript (cut after the chosen round for a round fork); subsequent messages continue through Claude CLI. No model request is sent by the fork operation itself.
 

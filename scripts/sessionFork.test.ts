@@ -8,8 +8,6 @@ import { DatabaseSync } from "node:sqlite";
 import { SessionForks } from "../server/sessionFork";
 import { forkCursorStore, decodeCursorMetadata, encodeCursorMetadata, CURSOR_FORK_VERSION } from "../server/providers/cursorFork";
 import { ClaudeProvider, claudeTurnCutoff, projectSlug } from "../server/providers/claude";
-import { orderBranchThreads } from "../app/forkTree";
-import { normalizeThread, type Thread } from "../app/threadModel";
 import { inheritedForkRuntime, defaultRuntimeSettings } from "../app/sessionRuntime";
 import { findSlashCommand, slashCommandDisabledReason } from "../app/slashCommands";
 
@@ -189,11 +187,7 @@ async function main() {
   await assert.rejects(claudeForks.fork("claude", { threadId: parentId, forkRequestId: randomUUID(), lastTurnId: "run-unknown" }, claudeRequest, () => false), /completed turn/);
   claudeForks.close();
 
-  const thread = (id: string, parent?: string) => normalizeThread({ id, provider: "codex", forkedFromId: parent, name: id, preview: id, cwd: root, updatedAt: 0, status: { type: "idle" }, turns: [] } as Thread);
-  assert.deepEqual(orderBranchThreads([thread("c", "p"), thread("p")], new Set()).map(t => t.nativeId), ["p", "c"]);
-  assert.deepEqual(orderBranchThreads([thread("c", "p"), thread("p")], new Set(["codex:p"])).map(t => t.nativeId), ["p"]);
-  assert.equal(orderBranchThreads([thread("c", "archived")], new Set()).length, 1);
   for (const provider of ["codex", "cursor", "claude"] as const) assert.equal(slashCommandDisabledReason(findSlashCommand("/fork")!, { provider, hasThread: true, activeTurn: false, supportsFork: true }), "");
-  console.log("Session fork tests passed: idempotency/restart, source/turn guards, locks, Cursor WAL/native metadata, real Claude SDK, branch tree.");
+  console.log("Session fork tests passed: idempotency/restart, source/turn guards, locks, Cursor WAL/native metadata, real Claude SDK.");
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
