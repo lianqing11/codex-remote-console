@@ -9,7 +9,7 @@ import {
   parseClaudeTranscript,
   projectSlug
 } from "../server/providers/claude";
-import type { AgentNormalizedEvent } from "../server/types";
+import type { AgentNormalizedEvent, AgentServerRequestEvent } from "../server/types";
 import { clipCodexHistory, clipOutput } from "../server/historyOutput";
 import {
   formatClaudeResetRelative,
@@ -177,6 +177,26 @@ if (args[0] === "auth" && args[1] === "status") {
 function line(value) {
   console.log(JSON.stringify(value));
 }
+if (args.includes("-p") && process.env.CLAUDE_FAKE_ASK === "1") {
+  const responses = {};
+  const input = require("node:readline").createInterface({ input: process.stdin });
+  input.on("line", (raw) => {
+    const message = JSON.parse(raw);
+    if (message.type === "user") {
+      line({ type: "control_request", request_id: "deny-1", request: { subtype: "can_use_tool", tool_name: "Write", input: {} } });
+      line({ type: "control_request", request_id: "ask-1", request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", tool_use_id: "toolu_ask", input: {
+        questions: [{ question: "Which color?", header: "Color", multiSelect: false, options: [{ label: "Red", description: "warm" }, { label: "Blue", description: "cool" }] }]
+      } } });
+    }
+    if (message.type !== "control_response") return;
+    responses[message.response.request_id] = message.response.response;
+    if (Object.keys(responses).length < 2) return;
+    line({ type: "assistant", message: { content: [{ type: "text", text: JSON.stringify(responses) }] } });
+    line({ type: "result", subtype: "success", result: "done" });
+  });
+  input.on("close", () => process.exit(0));
+  return;
+}
 if (args.includes("-p")) {
   const hang = process.env.CLAUDE_FAKE_HANG === "1";
   line({ type: "assistant", message: { content: [{ type: "text", text: "hello from claude" }] } });
@@ -216,7 +236,7 @@ process.exit(0);
   assert.equal(created.thread.mode, "plan");
 
   const events: AgentNormalizedEvent[] = [];
-  const unsubscribe = provider.subscribe((event) => events.push(event));
+  const unsubscribe = provider.subscribe((event) => { if (event.type === "agent:event") events.push(event); });
   const turn = await provider.handle("turn/start", {
     threadId: created.thread.id,
     input: [{ type: "text", text: "say hi", text_elements: [] }],
@@ -300,11 +320,43 @@ process.exit(0);
   });
   const hangingThread = await hanging.handle("thread/start", { cwd: project }) as { thread: { id: string } };
   const hangEvents: AgentNormalizedEvent[] = [];
-  hanging.subscribe((event) => hangEvents.push(event));
+  hanging.subscribe((event) => { if (event.type === "agent:event") hangEvents.push(event); });
   await hanging.handle("turn/start", { threadId: hangingThread.thread.id, prompt: "hang" });
   await hanging.handle("turn/interrupt", { threadId: hangingThread.thread.id });
   await waitFor(() => hangEvents.some((event) => event.event === "status" && event.status === "cancelled"), "claude interrupt");
   hanging.stop();
+
+  // AskUserQuestion reaches the browser as requestUserInput; the answer goes back over stdin.
+  const asking = new ClaudeProvider({
+    command: fake,
+    configDir: config,
+    stateDir: path.join(root, "state-ask"),
+    env: { ...process.env, CLAUDE_FAKE_ASK: "1" }
+  });
+  const askThread = await asking.handle("thread/start", { cwd: project }) as { thread: { id: string } };
+  const askEvents: Array<AgentNormalizedEvent | AgentServerRequestEvent> = [];
+  asking.subscribe((event) => askEvents.push(event));
+  const askTurn = await asking.handle("turn/start", { threadId: askThread.thread.id, prompt: "ask me" }) as { turn: { id: string } };
+  await waitFor(() => asking.pendingRequests().length === 1, "claude question");
+  const [question] = asking.pendingRequests();
+  assert.equal(question.method, "item/tool/requestUserInput");
+  assert.deepEqual(question.params, {
+    threadId: askThread.thread.id, turnId: askTurn.turn.id, itemId: "toolu_ask",
+    questions: [{ id: "Which color?", header: "Color", question: "Which color?", isOther: true, isSecret: false,
+      options: [{ label: "Red", description: "warm" }, { label: "Blue", description: "cool" }] }]
+  });
+  asking.respond(question.id, { answers: { "Which color?": { answers: ["Blue"] } } });
+  await waitFor(() => askEvents.some((event) => event.type === "agent:event" && event.event === "status" && event.status === "completed"), "answered claude turn");
+  const reply = askEvents.find((event) => event.type === "agent:event" && event.event === "assistant_text");
+  assert.deepEqual(JSON.parse(reply && "text" in reply ? reply.text : "{}"), {
+    "deny-1": { behavior: "deny", message: "Write needs approval, which this console does not grant." },
+    "ask-1": { behavior: "allow", updatedInput: { questions: [{ question: "Which color?", header: "Color", multiSelect: false,
+      options: [{ label: "Red", description: "warm" }, { label: "Blue", description: "cool" }] }], answers: { "Which color?": "Blue" } } }
+  });
+  assert.ok(askEvents.some((event) => event.type === "agent:serverRequestResolved" && event.requestId === question.id));
+  assert.equal(asking.pendingRequests().length, 0);
+  assert.throws(() => asking.respond(question.id, { answers: {} }), /no longer waiting/);
+  asking.stop();
   provider.stop();
 
   console.log("claude provider tests passed");

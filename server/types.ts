@@ -82,6 +82,13 @@ export type BrowserMessage =
       result: unknown;
     }
   | {
+      type: "agent:serverResponse";
+      requestId: string;
+      provider: AgentProviderName;
+      serverRequestId: JsonRpcId;
+      result: unknown;
+    }
+  | {
       type: "project:resolve";
       requestId: string;
       cwd: string;
@@ -274,8 +281,14 @@ export type CodexGatewayDiagnostic = {
   occurredAt: number;
 };
 
+/** A provider question the browser must answer, in Codex's requestUserInput shape. */
+export type AgentServerRequestEvent =
+  | { type: "agent:serverRequest"; provider: AgentProviderName; request: JsonRpcRequest }
+  | { type: "agent:serverRequestResolved"; provider: AgentProviderName; requestId: JsonRpcId };
+
 export type BrowserEvent =
   | AgentNormalizedEvent
+  | AgentServerRequestEvent
   | {
       type: "queue:snapshot";
       snapshot: AgentQueueSnapshot;

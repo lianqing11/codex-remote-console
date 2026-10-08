@@ -42,10 +42,11 @@ export function reconcileQueueTurnIdentities(items: QueuedPrompt[]) {
     claudeQueueTurns.set(threadId, runs);
     const stored = state.turnsByThread[threadId] || EMPTY_TURNS;
     const messages = state.itemsByThread[threadId] || EMPTY_ITEMS;
+    // Keep a just-started turn with no items yet; dropping it loses its status and prompt.
     const turns = (state.turnOrderByThread[threadId] || []).map((id) => ({
       ...stored[id], id, status: stored[id]?.status,
       items: (stored[id]?.itemIds || []).map((itemId) => messages[itemId]).filter(Boolean)
-    })).filter((turn) => turn.items.some((item) => item.type !== "diff"));
+    }));
     if (turns.length) applyItemsFromTurns(threadId, turns);
     // Claude streams assistant/tool blocks only. Restore the accepted prompt for
     // live turns, then let authoritative history replace this temporary item.

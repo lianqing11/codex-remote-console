@@ -48,7 +48,7 @@ import {
 } from "./project";
 import { attachSelectiveProxy } from "./selectiveProxy";
 import { snapshotCache } from "./snapshotCache";
-import type { AgentNormalizedEvent, AgentProviderId, AgentProviderSnapshot, BrowserEvent, BrowserMessage, BrowserReply } from "./types";
+import type { AgentNormalizedEvent, AgentProviderId, AgentServerRequestEvent, AgentProviderSnapshot, BrowserEvent, BrowserMessage, BrowserReply } from "./types";
 import { resolveUploadedInputs, UploadStore } from "./uploads";
 
 const execFileAsync = promisify(execFile);
@@ -73,7 +73,19 @@ const streamProviders = {
 const claudeFeishuSource = { id: "claude", label: "Claude Code" } as const;
 const uploadStore = new UploadStore();
 const sessionForks = new SessionForks();
-const pendingQueueRequests = new Map<string | number, { provider: "codex"; threadId: string }>();
+const pendingQueueRequests = new Map<string | number, { provider: AgentProviderId; threadId: string }>();
+
+function queueAwaitsRequest(requestId: string | number, provider: AgentProviderId, threadId: string) {
+  pendingQueueRequests.set(requestId, { provider, threadId });
+  agentQueue.handleWaitingForInput(provider, threadId, true);
+}
+
+function queueRequestResolved(requestId: string | number) {
+  const pending = pendingQueueRequests.get(requestId);
+  if (!pending) return;
+  pendingQueueRequests.delete(requestId);
+  agentQueue.handleWaitingForInput(pending.provider, pending.threadId, false);
+}
 
 const agentQueue = new AgentQueue(new AgentQueueStore(), {
   execute: executeQueueItem,
@@ -119,11 +131,17 @@ const codexThreadMetaLookup: ThreadMetaLookup = async (threadId, options) => {
 };
 
 function subscribeStreamProvider(
-  provider: { subscribe(callback: (event: AgentNormalizedEvent) => void): () => void; handle(method: string, params?: unknown): Promise<unknown> },
+  provider: { subscribe(callback: (event: AgentNormalizedEvent | AgentServerRequestEvent) => void): () => void; handle(method: string, params?: unknown): Promise<unknown> },
   id: "cursor" | "claude",
   source: FeishuNotifySource
 ) {
+  const lookupThread = async (threadId: string) => cursorThreadMeta(await provider.handle("thread/read", { threadId }), id);
   const unsubscribeNotify = provider.subscribe((event) => {
+    if (event.type === "agent:serverRequest") {
+      void notifyUserInputRequested(event.request, { config: feishuNotifyConfig, source, lookupThread });
+      return;
+    }
+    if (event.type !== "agent:event") return;
     const notification = id === "cursor" ? cursorCompletionNotification(event) : streamCompletionNotification(event);
     if (!notification) return;
     void (async () => {
@@ -140,14 +158,15 @@ function subscribeStreamProvider(
       await notifyTurnCompleted(notification, {
         config: feishuNotifyConfig,
         source,
-        lookupThread: async (threadId) => cursorThreadMeta(
-          await provider.handle("thread/read", { threadId }),
-          id
-        )
+        lookupThread
       });
     })();
   });
   const unsubscribeQueue = provider.subscribe((event) => {
+    if (event.type === "agent:serverRequest") {
+      return queueAwaitsRequest(event.request.id, id, String((event.request.params as { threadId: string }).threadId));
+    }
+    if (event.type === "agent:serverRequestResolved") return queueRequestResolved(event.requestId);
     if (event.event === "status" || event.event === "rate_limits") providerSnapshotCache.invalidate();
     if (event.event === "assistant_text" && event.text) {
       agentQueue.handleProviderActivity(id, event.sessionId, "firstOutputAt");
@@ -224,10 +243,7 @@ gateway.subscribe((event) => {
       ? event.request.params as Record<string, unknown>
       : {};
     const threadId = typeof params.threadId === "string" ? params.threadId : null;
-    if (threadId) {
-      pendingQueueRequests.set(event.request.id, { provider: "codex", threadId });
-      agentQueue.handleWaitingForInput("codex", threadId, true);
-    }
+    if (threadId) queueAwaitsRequest(event.request.id, "codex", threadId);
     if (event.request.method === "item/tool/requestUserInput") {
       void notifyUserInputRequested(event.request, {
         config: feishuNotifyConfig,
@@ -236,13 +252,7 @@ gateway.subscribe((event) => {
     }
   }
 
-  if (event.type === "codex:serverRequestResolved") {
-    const pending = pendingQueueRequests.get(event.requestId);
-    if (pending) {
-      pendingQueueRequests.delete(event.requestId);
-      agentQueue.handleWaitingForInput(pending.provider, pending.threadId, false);
-    }
-  }
+  if (event.type === "codex:serverRequestResolved") queueRequestResolved(event.requestId);
 
   if (event.type !== "codex:notification" || event.message.method !== "turn/completed") return;
   void notifyTurnCompleted(event.message, {
@@ -788,6 +798,13 @@ async function handleBrowserMessage(ws: WebSocket, raw: string) {
   if (message.type === "codex:serverResponse") {
     await gateway.respondToServerRequest(message.serverRequestId, message.result);
     send(ws, { type: "reply", requestId: message.requestId, ok: true, result: { ok: true } });
+    return;
+  }
+
+  if (message.type === "agent:serverResponse") {
+    if (message.provider !== "claude") throw new Error(`${message.provider} does not ask questions.`);
+    claudeProvider.respond(message.serverRequestId, message.result);
+    send(ws, { type: "reply", requestId: message.requestId, ok: true, result: { ok: true } });
   }
 }
 
@@ -843,6 +860,7 @@ app.prepare().then(async () => {
     const initialGatewaySnapshot = gateway.getSnapshot();
     send(ws, { type: "gateway:snapshot", snapshot: initialGatewaySnapshot });
     send(ws, { type: "queue:snapshot", snapshot: agentQueue.snapshot() });
+    for (const request of claudeProvider.pendingRequests()) send(ws, { type: "agent:serverRequest", provider: "claude", request });
     providersSnapshot().then((snapshot) => send(ws, { type: "agent:snapshot", providers: snapshot })).catch(() => {});
     gateway
       .ensureStarted()

@@ -9,6 +9,7 @@ import {
   setItemOrderForThread,
   setItemsForThread,
   setPendingPromptForThread,
+  setTurnOrderForThread,
   setTurnsForThread,
   shouldRestoreQueuePendingPrompt,
   subscribeThreadViewFor,
@@ -81,6 +82,13 @@ applyItemsFromTurns(liveClaude, [{ id: "native-user", startedAt: 102, status: "c
   { id: "reply", type: "agentMessage", text: "Done" }
 ] }]);
 assert.deepEqual(getThreadViewState().itemOrderByThread[liveClaude], ["native-user-message", "reply"], "history replaces the temporary prompt without duplication");
+// The next run starts before any output: the queue's running push must keep the empty live turn.
+setTurnsForThread(liveClaude, (turns) => ({ ...turns, "next-run": { id: "next-run", itemIds: [], status: "inProgress", startedAt: 140 } }));
+setTurnOrderForThread(liveClaude, (order) => [...order, "next-run"]);
+reconcileQueueTurnIdentities([{ ...liveQueue, runId: "next-run", text: "Now test it", createdAt: 139, updatedAt: 140 }]);
+const nextRun = getThreadViewState().turnsByThread[liveClaude]["next-run"];
+assert.equal(nextRun?.status, "inProgress", "a just-started turn keeps its status");
+assert.equal(threadHasLandedUserPrompt(liveClaude, "Now test it", "next-run"), true, "and shows its prompt");
 discardThreadView(liveClaude);
 
 const threadKey = "codex:history-after-diff";

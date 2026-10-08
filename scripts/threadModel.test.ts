@@ -5,6 +5,8 @@ import {
   activeTurnIdFromTurns,
   deriveSessionPhase,
   epochSeconds,
+  compareThreadsByRecency,
+  threadRecency,
   hydrateListedThread,
   assistantMessagePhase,
   isAssistantMessageItem,
@@ -88,6 +90,22 @@ const newer = normalizeThread({
   name: "Newer",
   turns: []
 });
+
+// Resuming an old conversation changes provider metadata without new dialogue.
+const resumedOld = { ...older, updatedAt: 100, recencyAt: 10 };
+const recentConversation = { ...newer, updatedAt: 25, recencyAt: 20 };
+assert.deepEqual([resumedOld, recentConversation].sort(compareThreadsByRecency).map(t => t.id), [newer.id, older.id]);
+assert.equal(threadRecency(resumedOld), 10);
+assert.equal(threadRecency({ ...resumedOld, updatedAt: 200 }), 10);
+assert.equal(threadRecency({ ...resumedOld, recencyAt: 0 }), 0);
+assert.equal(threadRecency({ ...older, recencyAt: null }), 10);
+assert.equal(threadRecency(older), 10); // Providers/older servers without recency metadata.
+assert.equal(threadRecency({ ...resumedOld, forkedAt: 150 }), 150);
+assert.equal(threadRecency({ ...older, recencyAt: 1_786_838_400_000 }), 1_786_838_400);
+const hydratedRecency = hydrateListedThread(resumedOld, { ...resumedOld, updatedAt: 300, recencyAt: 300 });
+assert.equal(threadRecency(hydratedRecency), 10); // Opening/reading must not reorder the row.
+assert.equal(hydratedRecency.updatedAt, 100); // History freshness remains separate from recency.
+assert.deepEqual(mergeThreadsById([], [resumedOld, recentConversation]).map(t => t.id), [newer.id, older.id]);
 const opened = mergeThreadsById([newer, older], [{ ...older, preview: "Opened", updatedAt: 99 }]);
 assert.deepEqual(opened.map((thread) => thread.id), ["codex:newer", "codex:older"]);
 assert.equal(opened[1].preview, "Opened");

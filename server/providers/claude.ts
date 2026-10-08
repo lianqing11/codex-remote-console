@@ -11,7 +11,10 @@ import type {
   AgentModelSummary,
   AgentNormalizedEvent,
   AgentProviderSnapshot,
-  AgentRunStatus
+  AgentRunStatus,
+  AgentServerRequestEvent,
+  JsonRpcId,
+  JsonRpcRequest
 } from "../types";
 
 export type ClaudeProviderOptions = {
@@ -74,7 +77,10 @@ type ClaudeStreamEvent = {
   result?: unknown;
 };
 
-type Handler = (event: AgentNormalizedEvent) => void;
+type Handler = (event: AgentNormalizedEvent | AgentServerRequestEvent) => void;
+
+// An AskUserQuestion call waiting on the browser; `controlId` is the CLI's control request id.
+type ClaudeQuestion = { run: ClaudeRun; controlId: string; input: Record<string, unknown>; request: JsonRpcRequest };
 
 const defaultClaudeModel = "claude-sonnet-5";
 const defaultEffort = "high";
@@ -409,6 +415,7 @@ export class ClaudeProvider {
   private readonly indexPath: string;
   private overlays = new Map<string, ClaudeOverlay>();
   private runs = new Map<string, ClaudeRun>();
+  private questions = new Map<JsonRpcId, ClaudeQuestion>();
   private subscribers = new Set<Handler>();
   private ready: Promise<void>;
   private versionCache: { value: string; diagnostic: string | null } | null = null;
@@ -497,7 +504,7 @@ export class ClaudeProvider {
     }
   }
 
-  private emit(event: AgentNormalizedEvent) {
+  private emit(event: AgentNormalizedEvent | AgentServerRequestEvent) {
     for (const subscriber of this.subscribers) subscriber(event);
   }
 
@@ -722,7 +729,9 @@ export class ClaudeProvider {
     ];
     if (effort) args.push("--effort", effort);
     if (overlay.title && overlay.title !== "New session") args.push("--name", overlay.title);
-    args.push(prompt);
+    // stream-json stdin carries the prompt and answers to AskUserQuestion; other tools that
+    // need approval are denied, as plain `-p` does.
+    args.push("--input-format", "stream-json", "--permission-prompt-tool", "stdio");
 
     this.emit({ type: "agent:event", provider: "claude", sessionId: id, runId, event: "status", status: "running" });
 
@@ -731,7 +740,7 @@ export class ClaudeProvider {
       // Every turn is a fresh process; connecting claude.ai account connectors adds ~2s
       // of startup. Local MCP servers still load; set the variable to "true" to opt back in.
       env: { ENABLE_CLAUDEAI_MCP_SERVERS: "false", ...childProcessEnv(this.env), CLAUDE_CONFIG_DIR: this.configDir },
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"]
     });
     const run: ClaudeRun = {
       runId,
@@ -744,6 +753,8 @@ export class ClaudeProvider {
       stderr: ""
     };
     this.runs.set(id, run);
+    child.stdin?.on("error", (error) => { run.stderr = `${run.stderr}${error.message}\n`; });
+    child.stdin?.write(`${JSON.stringify({ type: "user", message: { role: "user", content: prompt }, parent_tool_use_id: null, session_id: id })}\n`);
 
     let stdout = "";
     child.stdout?.on("data", (chunk: Buffer) => {
@@ -782,6 +793,11 @@ export class ClaudeProvider {
       void this.persist();
     }
     const run = this.runs.get(sessionId);
+    const row = record(parsed);
+    if (run && row.type === "control_request") return this.handleControlRequest(run, String(row.request_id), record(row.request));
+    if (row.type === "control_cancel_request") return this.resolveQuestion(`claude:${row.request_id}`);
+    // The CLI waits for more stdin after a result; closing it lets the process exit.
+    if (row.type === "result") run?.child.stdin?.end();
     for (const event of claudeStreamEvents(parsed, runId, run?.stream)) {
       if (event.event === "error" && run) run.failed = true;
       if (event.event === "rate_limits") {
@@ -808,10 +824,64 @@ export class ClaudeProvider {
     }
   }
 
+  private handleControlRequest(run: ClaudeRun, controlId: string, request: Record<string, unknown>) {
+    if (request.subtype !== "can_use_tool") {
+      return this.sendControl(run, { subtype: "error", request_id: controlId, error: `Unsupported control request: ${request.subtype}` });
+    }
+    const input = record(request.input);
+    if (request.tool_name !== "AskUserQuestion") {
+      return this.allowTool(run, controlId, { behavior: "deny", message: `${request.tool_name} needs approval, which this console does not grant.` });
+    }
+    const id = `claude:${controlId}`;
+    const questions = (Array.isArray(input.questions) ? input.questions : []).map(record).map((question) => ({
+      id: String(question.question),
+      header: String(question.header || ""),
+      question: String(question.question),
+      isOther: true,
+      isSecret: false,
+      options: (Array.isArray(question.options) ? question.options : []).map(record)
+        .map((option) => ({ label: String(option.label), description: String(option.description || "") }))
+    }));
+    const params = { threadId: run.sessionId, turnId: run.runId, itemId: String(request.tool_use_id || id), questions };
+    const pending = { run, controlId, input, request: { id, method: "item/tool/requestUserInput", params } };
+    this.questions.set(id, pending);
+    this.emit({ type: "agent:serverRequest", provider: "claude", request: pending.request });
+  }
+
+  /** Browser answers use Codex's shape: `{ answers: { [questionId]: { answers: string[] } } }`. */
+  respond(id: JsonRpcId, result: unknown) {
+    const question = this.questions.get(id);
+    if (!question) throw new Error("This Claude question is no longer waiting for an answer.");
+    const answers = Object.fromEntries(Object.entries(record(record(result).answers))
+      .map(([key, value]) => [key, ((record(value).answers || []) as string[]).join(", ")])
+      .filter(([, value]) => value));
+    this.allowTool(question.run, question.controlId, Object.keys(answers).length
+      ? { behavior: "allow", updatedInput: { ...question.input, answers } }
+      : { behavior: "deny", message: "The user dismissed the question without answering." });
+    this.resolveQuestion(id);
+  }
+
+  pendingRequests() {
+    return [...this.questions.values()].map((question) => question.request);
+  }
+
+  private allowTool(run: ClaudeRun, controlId: string, response: Record<string, unknown>) {
+    this.sendControl(run, { subtype: "success", request_id: controlId, response });
+  }
+
+  private sendControl(run: ClaudeRun, response: Record<string, unknown>) {
+    if (!run.finalized) run.child.stdin?.write(`${JSON.stringify({ type: "control_response", response })}\n`);
+  }
+
+  private resolveQuestion(id: JsonRpcId) {
+    if (this.questions.delete(id)) this.emit({ type: "agent:serverRequestResolved", provider: "claude", requestId: id });
+  }
+
   private finishRun(run: ClaudeRun, status: AgentRunStatus, message?: string) {
     if (run.finalized) return;
     run.finalized = true;
     this.runs.delete(run.sessionId);
+    for (const [id, question] of this.questions) if (question.run === run) this.resolveQuestion(id);
     this.emit({
       type: "agent:event",
       provider: "claude",

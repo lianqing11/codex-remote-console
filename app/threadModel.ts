@@ -102,6 +102,8 @@ export type Thread = {
   preview: string;
   cwd: string;
   updatedAt: number;
+  /** Provider conversation recency; settings/resume can change updatedAt alone. */
+  recencyAt?: number | null;
   status: { type: string; activeFlags?: unknown[] };
   name: string | null;
   turns: Turn[];
@@ -309,8 +311,12 @@ export function normalizeThreads(threads: Thread[] = []) {
   return threads.map(normalizeThread);
 }
 
-export function compareThreadsByRecency(left: Pick<Thread, "id" | "updatedAt">, right: Pick<Thread, "id" | "updatedAt">) {
-  return (right.updatedAt || 0) - (left.updatedAt || 0) || left.id.localeCompare(right.id);
+export function threadRecency(thread: Pick<Thread, "updatedAt" | "recencyAt" | "forkedAt">) {
+  return Math.max(epochSeconds(thread.recencyAt ?? thread.updatedAt), epochSeconds(thread.forkedAt));
+}
+
+export function compareThreadsByRecency(left: Pick<Thread, "id" | "updatedAt" | "recencyAt" | "forkedAt">, right: Pick<Thread, "id" | "updatedAt" | "recencyAt" | "forkedAt">) {
+  return threadRecency(right) - threadRecency(left) || left.id.localeCompare(right.id);
 }
 
 export function hydrateListedThread(prior: Thread, incoming: Thread): Thread {
@@ -326,6 +332,7 @@ export function hydrateListedThread(prior: Thread, incoming: Thread): Thread {
     preview: next.preview || listed.preview,
     name: next.name ?? listed.name,
     empty: next.turns?.length ? next.empty : listed.empty,
+    recencyAt: listed.recencyAt ?? next.recencyAt,
     updatedAt: listed.updatedAt > 0 ? listed.updatedAt : next.updatedAt
   };
 }

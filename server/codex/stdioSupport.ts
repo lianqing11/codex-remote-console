@@ -19,9 +19,12 @@ const defaultNoProxy = "localhost,127.0.0.1,::1";
 // login password, and PORT/NODE_ENV changed how agents' own projects build and serve.
 const serverOnlyVariable = /^(CODEX_WEB_|CODE_SERVER_|CODING_AGENT_CONSOLE_|NEXT_)|^(PORT|NODE_ENV)$/;
 
+// Lets Codex ask structured questions (item/tool/requestUserInput) outside Plan mode too.
+export const codexFeatureArgs = ["--enable", "default_mode_request_user_input"];
+
 export function codexAppServerArgs(source: Record<string, string | undefined>) {
   const value = source.CODEX_WEB_AUTO_COMPACT_TOKEN_LIMIT?.trim() || "200000";
-  const args = ["app-server", "--listen", "stdio://"];
+  const args = ["app-server", "--listen", "stdio://", ...codexFeatureArgs];
   if (value === "inherit") return args;
   if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < 10000) {
     throw new Error("CODEX_WEB_AUTO_COMPACT_TOKEN_LIMIT must be an integer >= 10000, or inherit.");

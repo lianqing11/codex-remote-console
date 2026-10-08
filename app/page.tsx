@@ -140,6 +140,7 @@ import {
   epochSeconds,
   formatTime,
   compareThreadsByRecency,
+  threadRecency,
   hydrateListedThread,
   isUserMessageItem,
   mergeThreadsById,
@@ -709,7 +710,7 @@ function buildThreadGroups(threads: Thread[], pinnedDirs: string[] = []) {
       updatedAt: 0,
       threads: []
     };
-    group.updatedAt = Math.max(group.updatedAt, thread.updatedAt || 0);
+    group.updatedAt = Math.max(group.updatedAt, threadRecency(thread));
     group.threads.push(thread);
     groups.set(groupCwd, group);
   }
@@ -1534,7 +1535,6 @@ export default function Home() {
   const uploadMaxFiles = bootstrap?.uploads?.maxFiles || 8;
 
   const activeRequest = pendingRequests[0] || null;
-  const activeRequestProvider = ((activeRequest?.params as { provider?: ProviderId } | undefined)?.provider || "codex") as ProviderId;
   const orderedThreads = useMemo(
     () => threads.filter((thread) => !thread.empty || threadKey(thread) === currentThreadKey).sort(compareThreadsByRecency),
     [currentThreadKey, threads]
@@ -1588,7 +1588,7 @@ export default function Home() {
         forkDisabledReason: forkReason(thread),
         cwd: thread.cwd,
         directory: directoryLabel(thread.cwd),
-        updatedAt: thread.updatedAt || 0,
+        updatedAt: threadRecency(thread),
         statusLabel: statusLabel(thread.status),
         model: runtime.model,
         reasoningEffort: runtime.reasoningEffort,
@@ -1947,7 +1947,6 @@ export default function Home() {
             agent(provider, "thread/list", {
           limit: 75,
           cursor,
-          sortKey: "updated_at",
           sortDirection: "desc",
           archived: sessionManagerArchived,
               searchTerm: searchTerm || null,
@@ -2244,7 +2243,10 @@ export default function Home() {
         if (selectedThreadIdRef.current === tid) firstOutputTurn.current = null;
         updateActiveTurn(tid, (params.turn as Turn | undefined)?.id || null);
         setThreads((current) => current.map((thread) => (
-          threadKey(thread) === tid ? { ...thread, updatedAt: nowSeconds() } : thread
+          threadKey(thread) === tid ? {
+            ...thread, updatedAt: nowSeconds(),
+            ...(thread.recencyAt != null ? { recencyAt: epochSeconds(params.turn?.startedAt) || nowSeconds() } : {})
+          } : thread
         )));
       }
       if (message.method === "item/agentMessage/delta" && params.delta && selectedThreadIdRef.current === tid) {
@@ -2438,7 +2440,11 @@ export default function Home() {
           setBootstrap((current) =>
             current ? { ...current, codex: message.snapshot, codexError: null } : current
           );
-          setPendingRequests(message.snapshot?.pendingServerRequests || []);
+          // Codex snapshots list only Codex requests; keep questions from other providers.
+          setPendingRequests((current) => [
+            ...current.filter((request) => request.params?.provider && request.params.provider !== "codex"),
+            ...(message.snapshot?.pendingServerRequests || [])
+          ]);
           setGatewayDiagnostic(message.snapshot?.diagnostic || null);
           return;
         }
@@ -4316,7 +4322,7 @@ export default function Home() {
                         onClick={() => chooseManagedThread(thread).catch((error) => setNotice(error.message))}
                       >
                         <strong>{thread.name || thread.preview || "Untitled session"}</strong>
-                        <small>{formatTime(thread.updatedAt)}</small>
+                        <small>{formatTime(threadRecency(thread))}</small>
                         <small className="providerBadge">{providerName(providerOf(thread))}</small>
                         <small title={thread.cwd}>{directoryLabel(thread.cwd)}</small>
                         <small>{statusLabel(thread.status)}</small>
@@ -4393,7 +4399,7 @@ export default function Home() {
                                 onClick={() => chooseManagedThread(thread).catch((error) => setNotice(error.message))}
                               >
                                 <strong>{thread.name || thread.preview || "Untitled session"}</strong>
-                                <small>{formatTime(thread.updatedAt)}</small>
+                                <small>{formatTime(threadRecency(thread))}</small>
                                 <small className="providerBadge">{providerName(providerOf(thread))}</small>
                                 <small>{statusLabel(thread.status)}</small>
                               </button>
@@ -5084,7 +5090,7 @@ export default function Home() {
               {remoteSearchHits.map((thread) => (
                 <button className="sessionSearchHit" key={threadKey(thread)} type="button" title={thread.cwd} onClick={() => openThread(thread).catch((error) => setNotice(error.message, "error"))}>
                   <strong>{threadTitle(thread)}</strong>
-                  <small>{providerName(providerOf(thread))} · {directoryLabel(thread.cwd)} · {formatTime(thread.updatedAt)}</small>
+                  <small>{providerName(providerOf(thread))} · {directoryLabel(thread.cwd)} · {formatTime(threadRecency(thread))}</small>
                 </button>
               ))}
             </div>
@@ -5534,7 +5540,7 @@ export default function Home() {
       {toolsOpen ? <ToolsDialog onClose={() => setToolsOpen(false)} onView={view => { setToolsOpen(false); setMobilePanel(null); if (view === "diff") setWorkspaceDiffKind("working"); setWorkspaceView(view); }} onAppearance={() => { setToolsOpen(false); setAppearanceOpen(true); }} onDirectory={() => { setToolsOpen(false); setDirectoryPickerOpen(true); }} onFork={selectedThread ? () => { setToolsOpen(false); forkSelectedThread(); } : undefined} onLogout={logout} /> : null}
       {sessionManagerOpen ? renderSessionManager() : null}
       {commandPanel ? renderCommandPanel() : null}
-      {activeRequest && providerCapability(providerStatus(bootstrap, activeRequestProvider), "approvals") ? (
+      {activeRequest ? (
         <ServerRequestDialog request={activeRequest} onAnswer={answerServerRequest} />
       ) : null}
       {directoryPickerOpen ? (
@@ -6179,7 +6185,7 @@ function UserInputDialog({
         tabIndex={-1}
       >
         <header>
-          <h2 id={`user-input-title-${request.id}`}>Codex needs input</h2>
+          <h2 id={`user-input-title-${request.id}`}>{providerName(request.params?.provider || "codex")} needs input</h2>
           <p>{params.questions.length} question{params.questions.length === 1 ? "" : "s"}</p>
           <ShortcutHints items={inputShortcutHints} />
         </header>

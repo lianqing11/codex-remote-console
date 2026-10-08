@@ -32,18 +32,21 @@ fs.mkdirSync(dir, { recursive: true });
 const file = path.join(dir, id + '.jsonl');
 function row(value) { fs.appendFileSync(file, JSON.stringify({ cwd: process.cwd(), timestamp: new Date().toISOString(), ...value }) + '\n'); }
 function send(value) { console.log(JSON.stringify(value)); }
-row({ type: 'user', uuid: crypto.randomUUID(), message: { content: args.at(-1) } });
-const progress = { id: crypto.randomUUID(), content: [{ type: 'text', text: 'Inspecting the fixture workspace.' }] };
-row({ type: 'assistant', message: progress });
-send({ type: 'assistant', message: progress });
-setTimeout(() => {
-  if (permission !== 'plan') fs.writeFileSync(path.join(process.cwd(), 'fixture.txt'), 'implemented\n');
-  const text = permission === 'plan' ? '1. Update the fixture.\n2. Run verification.\nCLAUDE_PLAN_READY' : 'CLAUDE_PLAN_EXECUTED';
-  const message = { id: crypto.randomUUID(), content: [{ type: 'text', text }] };
-  row({ type: 'assistant', message });
-  send({ type: 'assistant', message });
-  send({ type: 'result', subtype: 'success', result: text });
-}, 3500);
+// The prompt arrives as a stream-json user message; stdin closes after the result.
+require('node:readline').createInterface({ input: process.stdin }).once('line', (raw) => {
+  row({ type: 'user', uuid: crypto.randomUUID(), message: { content: JSON.parse(raw).message.content } });
+  const progress = { id: crypto.randomUUID(), content: [{ type: 'text', text: 'Inspecting the fixture workspace.' }] };
+  row({ type: 'assistant', message: progress });
+  send({ type: 'assistant', message: progress });
+  setTimeout(() => {
+    if (permission !== 'plan') fs.writeFileSync(path.join(process.cwd(), 'fixture.txt'), 'implemented\n');
+    const text = permission === 'plan' ? '1. Update the fixture.\n2. Run verification.\nCLAUDE_PLAN_READY' : 'CLAUDE_PLAN_EXECUTED';
+    const message = { id: crypto.randomUUID(), content: [{ type: 'text', text }] };
+    row({ type: 'assistant', message });
+    send({ type: 'assistant', message });
+    send({ type: 'result', subtype: 'success', result: text });
+  }, 3500);
+});
 '''
 
 FAKE_CODEX = r'''#!/usr/bin/env node

@@ -64,16 +64,15 @@ assert.ok(
   "Claude Feishu notifications must be subscribed once at server scope, not once per browser connection."
 );
 assert.match(serverSource, /event\.request\.method === "item\/tool\/requestUserInput"/);
-const planInputNotifyIndex = serverSource.indexOf("void notifyUserInputRequested(event.request");
-assert.ok(planInputNotifyIndex > serverSource.indexOf("gateway.subscribe((event) =>"));
-assert.ok(
-  planInputNotifyIndex < serverSource.indexOf('wss.on("connection"'),
-  "Plan input Feishu notifications must run once at server scope, not once per browser connection."
-);
-assert.equal(
-  serverSource.match(/void notifyUserInputRequested\(event\.request/g)?.length,
-  1,
-  "Plan input must have exactly one server-side notification call."
-);
+// One server-scope call for Codex and one for the stream providers (Claude questions).
+const planInputNotifyIndexes = [...serverSource.matchAll(/void notifyUserInputRequested\(event\.request/g)].map((match) => match.index!);
+assert.equal(planInputNotifyIndexes.length, 2, "Plan input must have one notification call per provider family.");
+assert.ok(planInputNotifyIndexes.some((index) => index > serverSource.indexOf("gateway.subscribe((event) =>")));
+for (const index of planInputNotifyIndexes) {
+  assert.ok(
+    index < serverSource.indexOf('wss.on("connection"'),
+    "Plan input Feishu notifications must run once at server scope, not once per browser connection."
+  );
+}
 
 console.log("provider protocol static checks passed");
