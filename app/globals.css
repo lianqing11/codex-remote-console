@@ -7107,3 +7107,26 @@ html[data-keyboard-open="true"] .composer {
 .fleetSessionRow > .fleetSessionMain { grid-column: 1; grid-row: 1; }
 .fleetSessionRow > .fleetRowMenu { grid-column: 2; grid-row: 1; }
 @media (max-width: 760px) { .turnSummaryMeta .forkTurnButton { padding: 3px 8px; } }
+
+.asyncQuestions {
+  display: grid;
+  gap: 10px;
+}
+
+.asyncQuestions .optionList > strong {
+  font-size: var(--fs-sm);
+}
+
+.asyncOption {
+  justify-self: start;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  text-align: left;
+}
+
+.asyncOption:hover,
+.asyncOption.active {
+  border-color: var(--success-line);
+  background: var(--accent-soft);
+}

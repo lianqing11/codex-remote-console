@@ -235,7 +235,7 @@ export const TurnPanel = memo(function TurnPanel({
   active,
   defaultOpen,
   diagnostic,
-  onOpenDiff, onForkTurn, forkDisabledReason, onLoadWorkLog,
+  onOpenDiff, onForkTurn, forkDisabledReason, onLoadWorkLog, onAnswerQuestion,
   provider,
   turn
 }: {
@@ -246,6 +246,8 @@ export const TurnPanel = memo(function TurnPanel({
   onForkTurn?: (turnId: string) => void;
   forkDisabledReason?: string;
   onLoadWorkLog?: (turnId: string, workLog: WorkLogSummary) => Promise<void>;
+  /** Set only on the latest idle turn, so its async question options can be answered with a click. */
+  onAnswerQuestion?: (text: string) => void;
   provider: ProviderId;
   turn: DisplayTurn;
 }) {
@@ -366,6 +368,7 @@ export const TurnPanel = memo(function TurnPanel({
                 <MessageItem
                   item={item}
                   key={item.id}
+                  onAnswerQuestion={onAnswerQuestion}
                   presentation="final"
                   provider={provider}
                   streaming={(active || Boolean(turn.pending)) && index === finalItems.length - 1}
@@ -386,6 +389,7 @@ export const TurnPanel = memo(function TurnPanel({
   current.diagnostic === next.diagnostic &&
   current.onOpenDiff === next.onOpenDiff &&
   current.onLoadWorkLog === next.onLoadWorkLog &&
+  current.onAnswerQuestion === next.onAnswerQuestion &&
   current.turn.workLog?.turnId === next.turn.workLog?.turnId &&
   current.provider === next.provider &&
   sameDisplayTurn(current.turn, next.turn));
@@ -547,13 +551,44 @@ function TurnCodeChanges({ items }: { items: ThreadItem[] }) {
   );
 }
 
+type AsyncQuestion = { title: string; options?: string[] | null };
+
+/** Options from Codex's request_user_input_async, which ends the turn; the answer is the next user message. */
+function AsyncQuestions({ questions, onAnswer }: { questions: AsyncQuestion[]; onAnswer: (text: string) => void }) {
+  const [picked, setPicked] = useState<string[]>([]);
+  function pick(index: number, option: string) {
+    const next = [...picked];
+    next[index] = option;
+    setPicked(next);
+    if (questions.every((_, i) => next[i])) {
+      onAnswer(questions.length === 1 ? option : questions.map((question, i) => `${question.title}\n${next[i]}`).join("\n\n"));
+    }
+  }
+  return (
+    <div className="asyncQuestions">
+      {questions.map((question, index) => (
+        <div className="optionList" key={index} role="group" aria-label={question.title}>
+          {questions.length > 1 ? <strong>{question.title}</strong> : null}
+          {question.options!.map((option) => (
+            <button className={`asyncOption ${picked[index] === option ? "active" : ""}`} key={option} type="button" onClick={() => pick(index, option)}>
+              {option}
+            </button>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 const MessageItem = memo(function MessageItem({
   item,
+  onAnswerQuestion,
   presentation = "default",
   provider,
   streaming = false
 }: {
   item: ThreadItem;
+  onAnswerQuestion?: (text: string) => void;
   presentation?: "default" | "progress" | "final";
   provider: ProviderId;
   streaming?: boolean;
@@ -587,6 +622,7 @@ const MessageItem = memo(function MessageItem({
                     ? "Diff"
                     : item.type;
   const output = text || (streaming ? "" : "…");
+  const questions = item.questions as AsyncQuestion[] | null | undefined;
   const isLong = !isReply && output.length > 800;
   const preClass = showExpanded ? "expandedPre" : "";
 
@@ -791,6 +827,9 @@ const MessageItem = memo(function MessageItem({
           {streaming ? <span className="streamCursor" /> : null}
         </pre>
       )}
+      {onAnswerQuestion && questions?.length && questions.every((question) => question.options?.length) ? (
+        <AsyncQuestions questions={questions} onAnswer={onAnswerQuestion} />
+      ) : null}
       {isLong ? (
         <button className="textButton" type="button" onClick={() => setExpanded((current) => !current)}>
           {showExpanded ? "Collapse" : "Expand"}

@@ -3535,6 +3535,24 @@ export default function Home() {
     }
   }
 
+  // Answers an async question from the latest final answer as the next user message, leaving the composer draft alone.
+  async function answerQuestion(text: string) {
+    if (!selectedThread) return;
+    const key = threadKey(selectedThread);
+    setPendingPrompt(text);
+    markThreadLive(key);
+    try {
+      await sendToThread(key, text);
+    } catch (error) {
+      clearThreadLive(key);
+      setPendingPrompt("");
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  }
+  const answerQuestionRef = useRef(answerQuestion);
+  answerQuestionRef.current = answerQuestion;
+  const onAnswerQuestion = useCallback((text: string) => void answerQuestionRef.current(text), []);
+
   async function submitSteerPrompt(text: string) {
     if (!text || !selectedThread || !activeTurnId) return;
     try {
@@ -5363,6 +5381,7 @@ export default function Home() {
             onForkTurn={currentCapabilities.forkAtTurn ? (turnId) => { if (selectedThread) void forkThread(selectedThread, turnId).catch(error => setNotice(error.message, "error")); } : undefined}
             forkDisabledReason={selectedThread ? forkReason(selectedThread) : ""}
             onLoadWorkLog={loadWorkLog}
+            onAnswerQuestion={onAnswerQuestion}
             threadKey={currentThreadKey}
             provider={selectedThreadProvider}
             providerLabel={providerName(selectedProvider)}

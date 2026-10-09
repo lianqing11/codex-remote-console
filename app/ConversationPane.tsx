@@ -98,6 +98,7 @@ type ConversationPaneProps = {
   diagnostic: GatewayDiagnostic | null;
   onOpenDiff?: (diff: ProjectDiff) => void;
   onForkTurn?: (turnId: string) => void;
+  onAnswerQuestion?: (text: string) => void;
   onLoadWorkLog?: (threadKey: string, turnId: string, workLog: WorkLogSummary) => Promise<void>;
   forkDisabledReason?: string;
   wsOnline: boolean;
@@ -120,7 +121,7 @@ export const ConversationPane = memo(function ConversationPane({
   historyLimit,
   onShowAllHistory,
   diagnostic,
-  onOpenDiff, onForkTurn, forkDisabledReason, onLoadWorkLog,
+  onOpenDiff, onForkTurn, forkDisabledReason, onLoadWorkLog, onAnswerQuestion,
   wsOnline,
   startProviders = [],
   selectedProvider,
@@ -235,6 +236,7 @@ export const ConversationPane = memo(function ConversationPane({
                 onOpenDiff={onOpenDiff}
                 onForkTurn={onForkTurn}
                 onLoadWorkLog={loadWorkLog}
+                onAnswerQuestion={index === 0 && !activeTurnId && !turn.pending ? onAnswerQuestion : undefined}
                 forkDisabledReason={forkDisabledReason}
                 provider={provider}
                 turn={turn}
